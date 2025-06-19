@@ -898,15 +898,15 @@ if st.sidebar.button("All_Report", key="All_Report"):
                 }
 
                 st.subheader("Combined NCR Report (JSON)")
-                st.json(combined_result_ncr)
+                st.dataframe(combined_result_ncr)
                 st.subheader("Safety NCR Closed Report (JSON)")
-                st.json(closed_result_safety)
+                st.dataframe(closed_result_safety)
                 st.subheader("Safety NCR Open Report (JSON)")
-                st.json(open_result_safety)
+                st.dataframe(open_result_safety)
                 st.subheader("Housekeeping NCR Closed Report (JSON)")
-                st.json(closed_result_housekeeping)
+                st.dataframe(closed_result_housekeeping)
                 st.subheader("Housekeeping NCR Open Report (JSON)")
-                st.json(open_result_housekeeping)
+                st.dataframe(open_result_housekeeping)
 
                 excel_file = generate_combined_excel_report_for_veridia(all_reports, f"All_Reports_{day}_{month_name}_{year}")
                 st.download_button(
@@ -995,15 +995,15 @@ if st.sidebar.button("All_Report", key="All_Report"):
                 }
 
                 st.subheader("Combined NCR Report (JSON)")
-                st.json(combined_result_ncr)
+                st.dataframe(combined_result_ncr)
                 st.subheader("Safety NCR Closed Report (JSON)")
-                st.json(closed_result_safety)
+                st.dataframe(closed_result_safety)
                 st.subheader("Safety NCR Open Report (JSON)")
-                st.json(open_result_safety)
+                st.dataframe(open_result_safety)
                 st.subheader("Housekeeping NCR Closed Report (JSON)")
-                st.json(closed_result_housekeeping)
+                st.dataframe(closed_result_housekeeping)
                 st.subheader("Housekeeping NCR Open Report (JSON)")
-                st.json(open_result_housekeeping)
+                st.dataframe(open_result_housekeeping)
 
                 excel_file = generate_combined_excel_report_for_ews(all_reports, f"All_Reports_{day}_{month_name}_{year}")
                 st.download_button(
@@ -1094,15 +1094,15 @@ if st.sidebar.button("All_Report", key="All_Report"):
                 }
 
                 st.subheader("Combined NCR Report (JSON)")
-                st.json(combined_result_ncr)
+                st.dataframe(combined_result_ncr)
                 st.subheader("Safety NCR Closed Report (JSON)")
-                st.json(closed_result_safety)
+                st.dataframe(closed_result_safety)
                 st.subheader("Safety NCR Open Report (JSON)")
-                st.json(open_result_safety)
+                st.dataframe(open_result_safety)
                 st.subheader("Housekeeping NCR Closed Report (JSON)")
-                st.json(closed_result_housekeeping)
+                st.dataframe(closed_result_housekeeping)
                 st.subheader("Housekeeping NCR Open Report (JSON)")
-                st.json(open_result_housekeeping)
+                st.dataframe(open_result_housekeeping)
 
                 excel_file = generate_combined_excel_report_for_eden(all_reports, f"All_Reports_{day}_{month_name}_{year}")
                 st.download_button(
@@ -1190,15 +1190,15 @@ if st.sidebar.button("All_Report", key="All_Report"):
                 }
 
                 st.subheader("Combined NCR Report (JSON)")
-                st.json(combined_result_ncr)
+                st.dataframe(combined_result_ncr)
                 st.subheader("Safety NCR Closed Report (JSON)")
-                st.json(closed_result_safety)
+                st.dataframe(closed_result_safety)
                 st.subheader("Safety NCR Open Report (JSON)")
-                st.json(open_result_safety)
+                st.dataframe(open_result_safety)
                 st.subheader("Housekeeping NCR Closed Report (JSON)")
-                st.json(closed_result_housekeeping)
+                st.dataframe(closed_result_housekeeping)
                 st.subheader("Housekeeping NCR Open Report (JSON)")
-                st.json(open_result_housekeeping)
+                st.dataframe(open_result_housekeeping)
 
                 excel_file = generate_combined_excel_report_for_club(all_reports, f"All_Reports_{day}_{month_name}_{year}")
                 st.download_button(
