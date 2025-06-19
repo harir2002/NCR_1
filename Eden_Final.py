@@ -93,6 +93,12 @@ def fetch_project_data(session_id, project_name, form_name, record_limit=1000):
     start_record = 1
     total_records = None
 
+     # Capture start time
+    start_time = datetime.now()
+    st.write(f"🔄 Fetching data from Asite started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Started fetching data from Asite for project '{project_name}', form '{form_name}' at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+
     with st.spinner("Fetching data from Asite..."):
         while True:
             search_criteria = {"criteria": [{"field": "ProjectName", "operator": 1, "values": [project_name]}, {"field": "FormName", "operator": 1, "values": [form_name]}], "recordStart": start_record, "recordLimit": record_limit}
@@ -113,6 +119,11 @@ def fetch_project_data(session_id, project_name, form_name, record_limit=1000):
                 logger.error(f"Error fetching data: {str(e)}")
                 st.error(f"❌ Error fetching data: {str(e)}")
                 break
+
+    # Capture end time
+    end_time = datetime.now()
+    st.write(f"🔄 Fetching data from Asite completed at {end_time.strftime('%Y-%m-%d %H:%M:%S')} (Duration: {(end_time - start_time).total_seconds()} seconds)")
+    logger.info(f"Finished fetching data from Asite for project '{project_name}', form '{form_name}' at {end_time.strftime('%Y-%m-%d %H:%M:%S')} (Duration: {(end_time - start_time).total_seconds()} seconds)")
 
     return {"responseHeader": {"results": len(all_data), "total_results": total_records}}, all_data, encoded_payload
 
@@ -370,7 +381,7 @@ def generate_ncr_report_for_eden(df: pd.DataFrame, report_type: str, start_date=
                     if discipline == "none" or not discipline:
                         logger.debug(f"Skipping record with invalid discipline: {discipline}")
                         continue
-                    elif "HSE" in discipline:
+                    elif "hse" in discipline:
                         logger.debug(f"Skipping HSE record: {discipline}")
                         cleaned_record["Discipline_Category"] = "HSE"
                         continue  # Skip HSE records entirely
@@ -451,12 +462,23 @@ def generate_ncr_report_for_eden(df: pd.DataFrame, report_type: str, start_date=
                 return {"error": f"Failed to obtain access token: {str(e)}"}, ""
 
             all_results = {report_type: {"Sites": {}, "Grand_Total": 0}}
-            chunk_size = int(os.getenv("CHUNK_SIZE", 50))
-
+            chunk_size = int(os.getenv("CHUNK_SIZE", 20))
+            
             for i in range(0, len(cleaned_data), chunk_size):
                 chunk = cleaned_data[i:i + chunk_size]
-                st.write(f"Processing chunk {i // chunk_size + 1}: Records {i} to {min(i + chunk_size, len(cleaned_data))}")
+                
+                # Capture and log start time
+                start_time = datetime.now()
+                st.write(f" 🔄 Processing chunk {i // chunk_size + 1}: Records {i} to {min(i + chunk_size, len(cleaned_data))} started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"Started chunk {i // chunk_size + 1} at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # Log data sent to WatsonX
                 logger.info(f"Data sent to WatsonX for {report_type} chunk {i // chunk_size + 1}: {json.dumps(chunk, indent=2)}")
+
+                # Log the total number of records being processed
+                total_records = len(cleaned_data)
+                st.write(f"Total {report_type} records to process: {total_records}")
+                logger.info(f"Total {report_type} records to process: {total_records}")
 
                 prompt = (
                     "IMPORTANT: RETURN ONLY A SINGLE VALID JSON OBJECT WITH THE EXACT FIELDS SPECIFIED BELOW. "
@@ -532,7 +554,6 @@ def generate_ncr_report_for_eden(df: pd.DataFrame, report_type: str, start_date=
                         api_result = response.json()
                         generated_text = api_result.get("results", [{}])[0].get("generated_text", "").strip()
                         short_text = generated_text[:200] + "..." if len(generated_text) > 200 else generated_text
-                        st.write(f"Debug - Raw response preview: {short_text}")
                         logger.debug(f"Parsed generated text: {generated_text}")
 
                         parsed_json = clean_and_parse_json(generated_text)
@@ -595,8 +616,36 @@ def generate_ncr_report_for_eden(df: pd.DataFrame, report_type: str, start_date=
                     st.write("Falling back to local count for this chunk")
                     process_chunk_locally(chunk, all_results, report_type)
 
-            st.write(f"Debug - Final {report_type} result: {json.dumps(all_results, indent=2)}")
-            return all_results, json.dumps(all_results)
+                end_time = datetime.now()
+                st.write(f"🔄 Chunk {i // chunk_size + 1} model processing for {report_type} completed at {end_time.strftime('%Y-%m-%d %H:%M:%S')} (Duration: {(end_time - start_time).total_seconds()} seconds)")
+                logger.info(f"Finished model processing chunk {i // chunk_size + 1} for {report_type} at {end_time.strftime('%Y-%m-%d %H:%M:%S')} (Duration: {(end_time - start_time).total_seconds()} seconds)")
+
+            table_data = []
+            for site, data in all_results[report_type]["Sites"].items():
+                row = {
+                    "Site": site,
+                    "SW Count": data["SW"],
+                    "FW Count": data["FW"],
+                    "MEP Count": data["MEP"],
+                    "Total Records": data["Total"],
+                    "Pours Count": json.dumps(data["PoursCount"], indent=2),
+                    "Descriptions": "; ".join(data["Descriptions"]),
+                    "Created Dates": "; ".join(data["Created Date (WET)"]),
+                    "Expected Close Dates": "; ".join(data["Expected Close Date (WET)"]),
+                    "Statuses": "; ".join(data["Status"]),
+                    "Disciplines": "; ".join(data["Discipline"]),
+                    "Pours": "; ".join([", ".join(m) for m in data["Pours"]])
+                }
+                table_data.append(row)
+            
+            if table_data:
+                df_table = pd.DataFrame(table_data)
+                st.write(f"Final {report_type} Results:")
+                st.dataframe(df_table, use_container_width=True)
+            else:
+                st.write(f"No data available for {report_type} report.")
+
+            return all_results, ""  # Ensure return even after processing all chunks
 
     except TypeError as e:
         logger.error(f"TypeError in generate_ncr_report: {str(e)}")
@@ -650,7 +699,7 @@ def process_chunk_locally(chunk, all_results, report_type):
             
     except Exception as e:
         logger.error(f"Error in local processing: {str(e)}")
-        raise
+        st.error(f"❌ Error in local processing: {str(e)}")
 
 # Generate NCR Housekeeping Report
 
@@ -1037,11 +1086,20 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
 
             # Define safety keywords
             safety_keywords = [
-                'safety precautions', 'temporary electricity', 'safety norms', 'safety belt', 'helmet',
-                'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard', 'unsafe platform',
-                'catch net', 'edge protection', 'TPI', 'scaffold', 'lifting equipment', 'dust suppression',
-                'debris chute', 'spill control', 'crane operator', 'halogen lamps', 'fall catch net',
-                'environmental contamination', 'fire hazard'
+                'safety precautions', 'temporary electricity', 'on-site labor is working without wearing safety belt',
+                'safety norms', 'Missing Cabin Glass – Tower Crane', 'Crane Operator cabin front glass',
+                'site on priority basis lifeline is not fixed at the working place',
+                'operated only after Third Party Inspection and certification crane operated without TPIC',
+                'safety precautions are not taken seriously at site Tower crane operator cabin front glass is missing while crane operator is working inside cabin',
+                'no barrier around', 'Lock and Key arrangement to restrict unauthorized operations, buzzer while operation, gates at landing platforms, catch net in the vicinity',
+                'safety precautions are not taken seriously', 'firecase', 'Health and Safety Plan',
+                'noticed that submission of statistics report is regularly delayed',
+                'crane operator cabin front glass is missing while crane operator is working inside cabin',
+                'labor is working without wearing safety belt', 'barricading', 'tank', 'safety shoes',
+                'safety belt', 'helmet', 'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard',
+                'unsafe platform', 'catch net', 'edge protection', 'TPI', 'scaffold', 'lifting equipment',
+                'dust suppression', 'debris chute', 'spill control', 'crane operator', 'halogen lamps',
+                'fall catch net', 'environmental contamination', 'fire hazard'
             ]
 
             def is_safety_record(description):
@@ -1051,7 +1109,7 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                 description_lower = description.lower()
                 return any(keyword in description_lower for keyword in safety_keywords)
 
-            # Preprocess date columns
+            # Preprocess date columns to avoid FutureWarning
             df['Created Date (WET)'] = pd.to_datetime(df['Created Date (WET)'], errors='coerce').astype(str)
             df['Expected Close Date (WET)'] = pd.to_datetime(df['Expected Close Date (WET)'], errors='coerce').astype(str)
 
@@ -1183,10 +1241,16 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                 logger.debug(f"Chunk data: {json.dumps(chunk, indent=2)}")
 
                 prompt = (
-                    "Generate ONE JSON object in the exact format below. Do not include code, explanations, multiple objects, or repeat input data. Count Safety NCRs by 'Tower' where 'Discipline' is 'HSE'. For open records, use 'Days_From_Today' > 7; for closed, use 'Days' > 7. Descriptions must contain these keywords (case-insensitive): "
-                    "'safety precautions', 'temporary electricity', 'safety norms', 'safety belt', 'helmet', 'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard', 'unsafe platform', "
-                    "'catch net', 'edge protection', 'TPI', 'scaffold', 'lifting equipment', 'dust suppression', 'debris chute', 'spill control', 'crane operator', 'halogen lamps', 'fall catch net', "
-                    "'environmental contamination', 'fire hazard'. Group by 'Tower' (e.g., 'Eden-Tower06'). Include all input sites, even with count 0. Collect 'Description', 'Created Date (WET)', 'Expected Close Date (WET)', 'Status' in arrays.\n\n"
+                    "Generate EXACTLY ONE JSON object matching the format below. Do not repeat input data, generate multiple objects, include code, explanations, or code blocks. Count Safety NCRs by 'Tower' where 'Discipline' is 'HSE' and 'Days' > 7 (closed) or 'Days_From_Today' > 7 (open). Descriptions must contain these keywords (case-insensitive): "
+                    "'safety precautions', 'temporary electricity', 'on-site labor is working without wearing safety belt', 'safety norms', 'Missing Cabin Glass – Tower Crane', 'Crane Operator cabin front glass', "
+                    "'site on priority basis lifeline is not fixed at the working place', 'operated only after Third Party Inspection and certification crane operated without TPIC', "
+                    "'safety precautions are not taken seriously at site Tower crane operator cabin front glass is missing while crane operator is working inside cabin', "
+                    "'no barrier around', 'Lock and Key arrangement to restrict unauthorized operations, buzzer while operation, gates at landing platforms, catch net in the vicinity', "
+                    "'safety precautions are not taken seriously', 'firecase', 'Health and Safety Plan', 'noticed that submission of statistics report is regularly delayed', "
+                    "'crane operator cabin front glass is missing while crane operator is working inside cabin', 'labor is working without wearing safety belt', 'barricading', 'tank', 'safety shoes', "
+                    "'safety belt', 'helmet', 'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard', 'unsafe platform', 'catch net', 'edge protection', 'TPI', 'scaffold', "
+                    "'lifting equipment', 'dust suppression', 'debris chute', 'spill control', 'crane operator', 'halogen lamps', 'fall catch net', 'environmental contamination', 'fire hazard'. "
+                    "Group by 'Tower' (e.g., 'Eden-Tower06', 'Common_Area'). Include all input sites, even with count 0. Collect 'Description', 'Created Date (WET)', 'Expected Close Date (WET)', 'Status' in arrays. Set 'Count' to the number of matching NCRs.\n\n"
                     "Output Format:\n"
                     "{\n"
                     '  "Safety": {\n'
@@ -1209,7 +1273,7 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                     "input": prompt,
                     "parameters": {
                         "decoding_method": "greedy",
-                        "max_new_tokens": 200,
+                        "max_new_tokens": 300,
                         "min_new_tokens": 0,
                         "temperature": 0.001,
                         "n": 1
@@ -1223,8 +1287,9 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                     "Authorization": f"Bearer {access_token}"
                 }
 
+
                 try:
-                    logger.debug(f"WatsonX payload: {json.dumps(payload, indent=2)}")
+                    logger.debug("Initiating WatsonX API call...")
                     response = session.post(WATSONX_API_URL, headers=headers, json=payload, verify=certifi.where(), timeout=30)
                     logger.info(f"WatsonX API response status: {response.status_code}")
 
@@ -1249,53 +1314,34 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
 
                         if json_str:
                             try:
+                                logger.debug(f"Extracted JSON string: {json_str}")
                                 parsed_json = json.loads(json_str)
-                                if "Safety" in parsed_json:
-                                    chunk_result = parsed_json.get("Safety", {})
-                                    chunk_sites = chunk_result.get("Sites", {})
-                                    chunk_grand_total = chunk_result.get("Grand_Total", 0)
+                                chunk_result = parsed_json.get("Safety", {})
+                                chunk_sites = chunk_result.get("Sites", {})
+                                chunk_grand_total = chunk_result.get("Grand_Total", 0)
 
-                                    for site, values in chunk_sites.items():
-                                        if not isinstance(values, dict):
-                                            logger.warning(f"Invalid site data for {site}: {values}")
-                                            continue
-                                        if site not in result["Safety"]["Sites"]:
-                                            result["Safety"]["Sites"][site] = {
-                                                "Count": 0,
-                                                "Descriptions": [],
-                                                "Created Date (WET)": [],
-                                                "Expected Close Date (WET)": [],
-                                                "Status": []
-                                            }
-                                        result["Safety"]["Sites"][site]["Descriptions"].extend(values.get("Descriptions", []))
-                                        result["Safety"]["Sites"][site]["Created Date (WET)"].extend(values.get("Created Date (WET)", []))
-                                        result["Safety"]["Sites"][site]["Expected Close Date (WET)"].extend(values.get("Expected Close Date (WET)", []))
-                                        result["Safety"]["Sites"][site]["Status"].extend(values.get("Status", []))
-                                        result["Safety"]["Sites"][site]["Count"] += values.get("Count", 0)
-                                    result["Safety"]["Grand_Total"] += chunk_grand_total
-                                    logger.debug(f"Successfully processed chunk {current_chunk}/{total_chunks}")
-                                else:
-                                    logger.warning(f"Unexpected JSON format for chunk {current_chunk}: {json_str}")
-                                    for record in chunk:
-                                        if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
-                                            site = record["Tower"]
-                                            if site not in result["Safety"]["Sites"]:
-                                                result["Safety"]["Sites"][site] = {
-                                                    "Count": 0,
-                                                    "Descriptions": [],
-                                                    "Created Date (WET)": [],
-                                                    "Expected Close Date (WET)": [],
-                                                    "Status": []
-                                                }
-                                            result["Safety"]["Sites"][site]["Descriptions"].append(record["Description"])
-                                            result["Safety"]["Sites"][site]["Created Date (WET)"].append(record["Created Date (WET)"])
-                                            result["Safety"]["Sites"][site]["Expected Close Date (WET)"].append(record["Expected Close Date (WET)"])
-                                            result["Safety"]["Sites"][site]["Status"].append(record["Status"])
-                                            result["Safety"]["Sites"][site]["Count"] += 1
-                                            result["Safety"]["Grand_Total"] += 1
-                            except json.JSONDecodeError:
-                                logger.error(f"JSONDecodeError for chunk {current_chunk}: Invalid JSON - {json_str}")
-                                error_placeholder.error(f"Failed to parse JSON for chunk {current_chunk}")
+                                for site, values in chunk_sites.items():
+                                    if not isinstance(values, dict):
+                                        logger.warning(f"Invalid site data for {site}: {values}")
+                                        continue
+                                    if site not in result["Safety"]["Sites"]:
+                                        result["Safety"]["Sites"][site] = {
+                                            "Count": 0,
+                                            "Descriptions": [],
+                                            "Created Date (WET)": [],
+                                            "Expected Close Date (WET)": [],
+                                            "Status": []
+                                        }
+                                    result["Safety"]["Sites"][site]["Descriptions"].extend(values.get("Descriptions", []))
+                                    result["Safety"]["Sites"][site]["Created Date (WET)"].extend(values.get("Created Date (WET)", []))
+                                    result["Safety"]["Sites"][site]["Expected Close Date (WET)"].extend(values.get("Expected Close Date (WET)", []))
+                                    result["Safety"]["Sites"][site]["Status"].extend(values.get("Status", []))
+                                    result["Safety"]["Sites"][site]["Count"] += values.get("Count", 0)
+                                result["Safety"]["Grand_Total"] += chunk_grand_total
+                                logger.debug(f"Successfully processed chunk {current_chunk}/{total_chunks}")
+                            except json.JSONDecodeError as e:
+                                logger.error(f"JSONDecodeError for chunk {current_chunk}: {str(e)}")
+                                error_placeholder.error(f"Failed to parse JSON for chunk {current_chunk}: {str(e)}")
                                 for record in chunk:
                                     if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
                                         site = record["Tower"]
@@ -1393,27 +1439,6 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                             result["Safety"]["Sites"][site]["Status"].append(record["Status"])
                             result["Safety"]["Sites"][site]["Count"] += 1
                             result["Safety"]["Grand_Total"] += 1
-
-            # Validate WatsonX result against cleaned_data
-            if result["Safety"]["Grand_Total"] == 0 and cleaned_data:
-                logger.warning("WatsonX returned zero count despite valid records; using fallback counting")
-                for record in cleaned_data:
-                    if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
-                        site = record["Tower"]
-                        if site not in result["Safety"]["Sites"]:
-                            result["Safety"]["Sites"][site] = {
-                                "Count": 0,
-                                "Descriptions": [],
-                                "Created Date (WET)": [],
-                                "Expected Close Date (WET)": [],
-                                "Status": []
-                            }
-                        result["Safety"]["Sites"][site]["Descriptions"].append(record["Description"])
-                        result["Safety"]["Sites"][site]["Created Date (WET)"].append(record["Created Date (WET)"])
-                        result["Safety"]["Sites"][site]["Expected Close Date (WET)"].append(record["Expected Close Date (WET)"])
-                        result["Safety"]["Sites"][site]["Status"].append(record["Status"])
-                        result["Safety"]["Sites"][site]["Count"] += 1
-                        result["Safety"]["Grand_Total"] += 1
 
             progress_bar.progress(100)
             status_placeholder.write(f"Processed {total_chunks}/{total_chunks} chunks (100%)")
@@ -2404,6 +2429,12 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
     output.seek(0)
     return output
 
+# Streamlit UI
+
+
+# Generate Combined NCR Report
+
+
 # Helper function to generate report title
 def generate_report_title(prefix):
     now = datetime.now()  # Current date: April 25, 2025
@@ -2416,7 +2447,5 @@ def generate_report_title(prefix):
 
 # Generate Housekeeping NCR Report
 
+
 # All Reports Button
-
-
-
