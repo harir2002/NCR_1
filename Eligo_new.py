@@ -94,6 +94,12 @@ def fetch_project_data(session_id, project_name, form_name, record_limit=1000):
     start_record = 1
     total_records = None
 
+     # Capture start time
+    start_time = datetime.now()
+    st.write(f"🔄 Fetching data from Asite started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Started fetching data from Asite for project '{project_name}', form '{form_name}' at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+
     with st.spinner("Fetching data from Asite..."):
         while True:
             search_criteria = {"criteria": [{"field": "ProjectName", "operator": 1, "values": [project_name]}, {"field": "FormName", "operator": 1, "values": [form_name]}], "recordStart": start_record, "recordLimit": record_limit}
@@ -114,6 +120,11 @@ def fetch_project_data(session_id, project_name, form_name, record_limit=1000):
                 logger.error(f"Error fetching data: {str(e)}")
                 st.error(f"❌ Error fetching data: {str(e)}")
                 break
+    # Capture end time
+    end_time = datetime.now()
+    st.write(f"🔄 Fetching data from Asite completed at {end_time.strftime('%Y-%m-%d %H:%M:%S')} (Duration: {(end_time - start_time).total_seconds()} seconds)")
+    logger.info(f"Finished fetching data from Asite for project '{project_name}', form '{form_name}' at {end_time.strftime('%Y-%m-%d %H:%M:%S')} (Duration: {(end_time - start_time).total_seconds()} seconds)")
+
 
     return {"responseHeader": {"results": len(all_data), "total_results": total_records}}, all_data, encoded_payload
 
@@ -568,12 +579,17 @@ def generate_ncr_report_for_eligo(df: pd.DataFrame, report_type: str, start_date
                     if discipline == "none" or not discipline:
                         logger.debug(f"Skipping record with invalid discipline: {discipline}")
                         continue
+                    elif "hse" in discipline:
+                        logger.debug(f"Skipping HSE record: {discipline}")
+                        cleaned_record["Discipline_Category"] = "HSE"
+                        continue  # Skip HSE records entirely
                     elif "structure" in discipline or "sw" in discipline:
                         cleaned_record["Discipline_Category"] = "SW"
                     elif "civil" in discipline or "finishing" in discipline or "fw" in discipline:
                         cleaned_record["Discipline_Category"] = "FW"
                     else:
                         cleaned_record["Discipline_Category"] = "MEP"
+
                     
                     # Determine tower assignment
                     tower_assignment = determine_tower_assignment(description)
@@ -614,8 +630,19 @@ def generate_ncr_report_for_eligo(df: pd.DataFrame, report_type: str, start_date
             for i in range(0, len(cleaned_data), chunk_size):
                 chunk = cleaned_data[i:i + chunk_size]
                 chunk_num = i // chunk_size + 1
-                st.write(f"Processing chunk {chunk_num}: Records {i} to {min(i + chunk_size, len(cleaned_data))} (Total: {len(chunk)} records)")
-                logger.info(f"Processing chunk {chunk_num} with {len(chunk)} records")
+                
+                # Capture and log start time
+                start_time = datetime.now()
+                st.write(f" 🔄 Processing chunk {chunk_num}: Records {i} to {min(i + chunk_size, len(cleaned_data))} started at {start_time.strftime('%Y-%m-%d %H:%M:%S')} (Total: {len(chunk)} records)")
+                logger.info(f"Started chunk {chunk_num} at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # Log data sent to WatsonX
+                logger.info(f"Data sent to WatsonX for {report_type} chunk {chunk_num}: {json.dumps(chunk, indent=2)}")
+
+                # Log the total number of records being processed
+                total_records = len(cleaned_data)
+                st.write(f"Total {report_type} records to process: {total_records}")
+                logger.info(f"Total {report_type} records to process: {total_records}")
 
                 # Enhanced prompt with better validation
                 prompt = (
@@ -759,7 +786,6 @@ def generate_ncr_report_for_eligo(df: pd.DataFrame, report_type: str, start_date
                                     st.success(f"Successfully processed chunk {chunk_num} with {len(chunk)} records")
                         else:
                             logger.error(f"No valid JSON found in response for chunk {chunk_num}")
-                            st.error(f"❌ No valid JSON found in response for chunk {chunk_num}")
                             st.write("Falling back to local processing")
                             process_chunk_locally(chunk, all_results, report_type)
                     else:
@@ -791,7 +817,47 @@ def generate_ncr_report_for_eligo(df: pd.DataFrame, report_type: str, start_date
             for site_name in sites_to_remove:
                 del all_results[report_type]["Sites"][site_name]
 
-            st.write(f"Debug - Final {report_type} result: {json.dumps(all_results, indent=2)}")
+            # Capture and log end time after API call
+            end_time = datetime.now()
+            duration_seconds = (end_time - start_time).total_seconds()
+            duration_minutes = duration_seconds / 60
+
+            st.write(
+                f"🔄 Chunk {i // chunk_size + 1} model processing for {report_type} completed at {end_time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"(Duration: {duration_seconds:.2f} seconds / {duration_minutes:.2f} minutes)"
+            )
+
+            logger.info(
+                f"Finished model processing chunk {i // chunk_size + 1} for {report_type} at {end_time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"(Duration: {duration_seconds:.2f} seconds / {duration_minutes:.2f} minutes)"
+            )
+
+            # Convert all_results to a DataFrame for table display
+            table_data = []
+            for site, data in all_results[report_type]["Sites"].items():
+                row = {
+                    "Site": site,
+                    "SW Count": data["SW"],
+                    "FW Count": data["FW"],
+                    "MEP Count": data["MEP"],
+                    "Total Records": data["Total"],
+                    "Modules Count": json.dumps(data["ModulesCount"], indent=2),
+                    "Descriptions": "; ".join(data["Descriptions"]),
+                    "Created Dates": "; ".join(data["Created Date (WET)"]),
+                    "Expected Close Dates": "; ".join(data["Expected Close Date (WET)"]),
+                    "Statuses": "; ".join(data["Status"]),
+                    "Disciplines": "; ".join(data["Discipline"]),
+                    "Modules": "; ".join([", ".join(m) for m in data["Modules"]])
+                }
+                table_data.append(row)
+            
+            if table_data:
+                df_table = pd.DataFrame(table_data)
+                st.write(f"Final {report_type} Results:")
+                st.dataframe(df_table, use_container_width=True)
+            else:
+                st.write(f"No data available for {report_type} report.")
+
             return all_results, json.dumps(all_results)
 
     except Exception as e:
@@ -2677,7 +2743,7 @@ def generate_combined_excel_report_for_eligo(all_reports, filename_prefix="All_R
     return output
 
 @st.cache_data
-def generate_consolidated_ncr_Safety_excel_for_eligo(combined_result, report_title=None):
+def generate_consolidated_ncr_Safety_excel(combined_result, report_title=None):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
@@ -2802,6 +2868,39 @@ def generate_consolidated_ncr_Safety_excel_for_eligo(combined_result, report_tit
 
 # Generate Combined NCR Report
 
+    if st.session_state["ncr_df"] is not None:
+        ncr_df = st.session_state["ncr_df"]
+        now = datetime.now()
+        day = now.strftime("%d")
+        year = now.strftime("%Y")
+        month_name = closed_end.strftime("%B")
+        report_title = f"NCR: {day}_{month_name}_{year}"
+        
+        closed_result, closed_raw = generate_ncr_report_for_eligo(ncr_df, "Closed", closed_start, closed_end)
+        open_result, open_raw = generate_ncr_report_for_eligo(ncr_df, "Open", Until_Date=open_end)
+
+        combined_result = {}
+        if "error" not in closed_result:
+            combined_result["NCR resolved beyond 21 days"] = closed_result["Closed"]
+        else:
+            combined_result["NCR resolved beyond 21 days"] = {"error": closed_result["error"]}
+        if "error" not in open_result:
+            combined_result["NCR open beyond 21 days"] = open_result["Open"]
+        else:
+            combined_result["NCR open beyond 21 days"] = {"error": open_result["error"]}
+
+        st.subheader("Combined NCR Report (JSON)")
+        st.dataframe(combined_result)
+        
+        excel_file = generate_consolidated_ncr_OpenClose_excel_for_eligo(combined_result, report_title)
+        st.download_button(
+            label="📥 Download Excel Report",
+            data=excel_file,
+            file_name=f"NCR_Report_{day}_{month_name}_{year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.error("Please fetch data first!")
 
 # Helper function to generate report title
 def generate_report_title(prefix):
@@ -2815,7 +2914,6 @@ def generate_report_title(prefix):
 
 
 # Generate Housekeeping NCR Report
-
 
 # All Reports Button
 
