@@ -126,6 +126,11 @@ def fetch_project_data(session_id, project_name, form_name, record_limit=1000):
     start_record = 1
     total_records = None
 
+    # Capture start time
+    start_time = datetime.now()
+    st.write(f"🔄 Fetching data from Asite started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Started fetching data from Asite for project '{project_name}', form '{form_name}' at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
     with st.spinner("Fetching data from Asite..."):
         while True:
             search_criteria = {"criteria": [{"field": "ProjectName", "operator": 1, "values": [project_name]}, {"field": "FormName", "operator": 1, "values": [form_name]}], "recordStart": start_record, "recordLimit": record_limit}
@@ -146,6 +151,11 @@ def fetch_project_data(session_id, project_name, form_name, record_limit=1000):
                 logger.error(f"Error fetching data: {str(e)}")
                 st.error(f"❌ Error fetching data: {str(e)}")
                 break
+
+
+    end_time = datetime.now()
+    st.write(f"🔄 Fetching data from Asite completed at {end_time.strftime('%Y-%m-%d %H:%M:%S')} (Duration: {(end_time - start_time).total_seconds()} seconds)")
+    logger.info(f"Finished fetching data from Asite for project '{project_name}', form '{form_name}' at {end_time.strftime('%Y-%m-%d %H:%M:%S')} (Duration: {(end_time - start_time).total_seconds()} seconds)")
 
     return {"responseHeader": {"results": len(all_data), "total_results": total_records}}, all_data, encoded_payload
 
@@ -262,6 +272,7 @@ def assign_site(description: str, standard_sites: list) -> list:
 
     # Return matched sites or default to Common Area
     return sorted(matched) if matched else ["Common Area"]
+
 @st.cache_data
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2), retry=retry_if_exception_type((requests.RequestException, ValueError, KeyError)))
 def generate_ncr_report_for_ews(df: pd.DataFrame, report_type: str, start_date=None, end_date=None, Until_Date=None) -> Tuple[Dict[str, Any], str]:
@@ -403,15 +414,17 @@ def generate_ncr_report_for_ews(df: pd.DataFrame, report_type: str, start_date=N
                     if discipline == "none" or not discipline:
                         logger.debug(f"Skipping record with invalid discipline: {discipline}")
                         continue
-                    elif "HSE" in discipline:
+                    elif "hse" in discipline:
                         logger.debug(f"Skipping HSE record: {discipline}")
-                        continue  
+                        cleaned_record["Discipline_Category"] = "HSE"
+                        continue  # Skip HSE records entirely
                     elif "structure" in discipline or "sw" in discipline:
                         cleaned_record["Discipline_Category"] = "SW"
                     elif "civil" in discipline or "finishing" in discipline or "fw" in discipline:
                         cleaned_record["Discipline_Category"] = "FW"
                     else:
                         cleaned_record["Discipline_Category"] = "MEP"
+
                         
                     unique_records.append(cleaned_record["Description"])
 
@@ -449,11 +462,22 @@ def generate_ncr_report_for_ews(df: pd.DataFrame, report_type: str, start_date=N
 
             all_results = {report_type: {"Sites": {}, "Grand_Total": 0}}
             chunk_size = int(os.getenv("CHUNK_SIZE", 20))
-
+            
             for i in range(0, len(cleaned_data), chunk_size):
                 chunk = cleaned_data[i:i + chunk_size]
-                st.write(f"Processing chunk {i // chunk_size + 1}: Records {i} to {min(i + chunk_size, len(cleaned_data))}")
+                
+                # Capture and log start time
+                start_time = datetime.now()
+                st.write(f" 🔄 Processing chunk {i // chunk_size + 1}: Records {i} to {min(i + chunk_size, len(cleaned_data))} started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"Started chunk {i // chunk_size + 1} at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # Log data sent to WatsonX
                 logger.info(f"Data sent to WatsonX for {report_type} chunk {i // chunk_size + 1}: {json.dumps(chunk, indent=2)}")
+
+                # Log the total number of records being processed
+                total_records = len(cleaned_data)
+                st.write(f"Total {report_type} records to process: {total_records}")
+                logger.info(f"Total {report_type} records to process: {total_records}")
 
                 prompt = (
                     "IMPORTANT: RETURN ONLY A SINGLE VALID JSON OBJECT WITH THE EXACT FIELDS SPECIFIED BELOW. "
@@ -527,7 +551,6 @@ def generate_ncr_report_for_ews(df: pd.DataFrame, report_type: str, start_date=N
                         api_result = response.json()
                         generated_text = api_result.get("results", [{}])[0].get("generated_text", "").strip()
                         short_text = generated_text[:200] + "..." if len(generated_text) > 200 else generated_text
-                        st.write(f"Debug - Raw response preview: {short_text}")
                         logger.debug(f"Parsed generated text: {generated_text}")
 
                         parsed_json = clean_and_parse_json(generated_text)
@@ -687,7 +710,45 @@ def generate_ncr_report_for_ews(df: pd.DataFrame, report_type: str, start_date=N
                             all_results[report_type]["Sites"][site]["Total"] += data["Total"]
                         all_results[report_type]["Grand_Total"] += len(chunk)
 
-            st.write(f"Debug - Final {report_type} result: {json.dumps(all_results, indent=2)}")
+            # Capture and log end time after API call
+            end_time = datetime.now()
+            duration_seconds = (end_time - start_time).total_seconds()
+            duration_minutes = duration_seconds / 60
+
+            st.write(
+                f"🔄 Chunk {i // chunk_size + 1} model processing for {report_type} completed at {end_time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"(Duration: {duration_seconds:.2f} seconds / {duration_minutes:.2f} minutes)"
+            )
+
+            logger.info(
+                f"Finished model processing chunk {i // chunk_size + 1} for {report_type} at {end_time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"(Duration: {duration_seconds:.2f} seconds / {duration_minutes:.2f} minutes)"
+            )
+
+            # Convert all_results to a DataFrame for table display
+            table_data = []
+            for site, data in all_results[report_type]["Sites"].items():
+                row = {
+                    "Site": site,
+                    "SW Count": data["SW"],
+                    "FW Count": data["FW"],
+                    "MEP Count": data["MEP"],
+                    "Total Records": data["Total"],
+                    "Descriptions": "; ".join(data["Descriptions"]),
+                    "Created Dates": "; ".join(data["Created Date (WET)"]),
+                    "Expected Close Dates": "; ".join(data["Expected Close Date (WET)"]),
+                    "Statuses": "; ".join(data["Status"]),
+                    "Disciplines": "; ".join(data["Discipline"]),
+                }
+            table_data.append(row)
+            
+            if table_data:
+                df_table = pd.DataFrame(table_data)
+                st.write(f"Final {report_type} Results:")
+                st.dataframe(df_table, use_container_width=True)
+            else:
+                st.write(f"No data available for {report_type} report.")
+
             return all_results, json.dumps(all_results)
 
     except TypeError as e:
@@ -2119,14 +2180,6 @@ def generate_combined_excel_report_for_ews(all_reports, filename_prefix="All_Rep
     return output
 
 
-# Data Fetch Section (unchanged)
-
-
-# Report Generation Section
-
-
-# Generate Combined NCR Report
-
 
 # Helper function to generate report title
 def generate_report_title(prefix):
@@ -2143,6 +2196,5 @@ def generate_report_title(prefix):
 
 
 # All Reports Button
-
 
         
