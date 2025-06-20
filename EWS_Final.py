@@ -2181,6 +2181,9 @@ def generate_combined_excel_report_for_ews(all_reports, filename_prefix="All_Rep
 
 
 
+# Generate Combined NCR Report
+
+
 # Helper function to generate report title
 def generate_report_title(prefix):
     now = datetime.now()  # Current date: April 25, 2025
@@ -2197,4 +2200,4 @@ def generate_report_title(prefix):
 
 # All Reports Button
 
-        
+
