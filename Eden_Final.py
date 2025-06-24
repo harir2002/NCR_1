@@ -1082,7 +1082,7 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
             today = pd.to_datetime(datetime.today().strftime('%Y/%m/%d'))
             closed_start = pd.to_datetime(start_date) if start_date else None
             closed_end = pd.to_datetime(end_date) if end_date else None
-            open_until = pd.to_datetime(until_date) if until_date else None
+            open_until = pd.to_datetime(until_date) if until_date else today
 
             # Define safety keywords
             safety_keywords = [
@@ -1099,7 +1099,7 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                 'safety belt', 'helmet', 'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard',
                 'unsafe platform', 'catch net', 'edge protection', 'TPI', 'scaffold', 'lifting equipment',
                 'dust suppression', 'debris chute', 'spill control', 'crane operator', 'halogen lamps',
-                'fall catch net', 'environmental contamination', 'fire hazard'
+                'fall catch net', 'environmental contamination', 'fire hazard',' continuous down slope movement of soil','continuous collapse of soil leading '
             ]
 
             def is_safety_record(description):
@@ -1107,34 +1107,83 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                     logger.debug(f"Invalid description encountered: {description}")
                     return False
                 description_lower = description.lower()
-                return any(keyword in description_lower for keyword in safety_keywords)
+                matches = any(keyword in description_lower for keyword in safety_keywords)
+                if not matches:
+                    logger.debug(f"No safety keywords found in: {description}")
+                return matches
 
-            # Preprocess date columns to avoid FutureWarning
-            df['Created Date (WET)'] = pd.to_datetime(df['Created Date (WET)'], errors='coerce').astype(str)
-            df['Expected Close Date (WET)'] = pd.to_datetime(df['Expected Close Date (WET)'], errors='coerce').astype(str)
+            # Normalize site names to support combined tower Common Areas
+            def normalize_site_name(description):
+                desc_lower = description.lower() if isinstance(description, str) else ""
+                # Handle tower-specific CommonArea (e.g., Eden-Tower-04-CommonArea or Eden-Tower-04-05-CommonArea)
+                tower_common_match = re.search(r'(?:eden-)?tower-(\d+)(?:-(\d+))?-commonarea', desc_lower, re.IGNORECASE)
+                if tower_common_match:
+                    tower_num1 = tower_common_match.group(1).zfill(2)
+                    tower_num2 = tower_common_match.group(2).zfill(2) if tower_common_match.group(2) else None
+                    if tower_num2:
+                        return (f"Eden-Tower {tower_num1}", f"Eden-Tower {tower_num2}")
+                    else:
+                        return f"Eden-Tower {tower_num1}"
+                
+                # Handle general CommonArea variations
+                if "commonarea" in desc_lower or "common area" in desc_lower:
+                    return "Common_Area"
+                
+                # Handle regular tower names
+                tower_match = re.search(r"(?:eden-)?(?:tower|t)\s*-?\s*(\d+|2021|28)", desc_lower, re.IGNORECASE)
+                if tower_match:
+                    num = tower_match.group(1).zfill(2)
+                    return f"Eden-Tower {num}"
+                
+                return "Common_Area"
 
             # Filter data
             if report_type == "Closed":
+                st.write("Null check for critical columns:")
+                st.write(df[['Days', 'Description', 'Created Date (WET)', 'Expected Close Date (WET)']].isnull().sum())
+
                 filtered_df = df[
-                    (df['Discipline'] == 'HSE') &
+                    (
+                        (df['Discipline'] == 'HSE') |
+                        (df['Description'].apply(is_safety_record))
+                    ) &
                     (df['Status'] == 'Closed') &
                     (df['Days'].notnull()) &
-                    (df['Days'] > 7) &
-                    (df['Description'].apply(is_safety_record))
+                    (df['Days'] > 7)
                 ].copy()
+                
+                # Apply date filtering only if dates are provided
                 if closed_start and closed_end:
                     filtered_df = filtered_df[
-                        (pd.to_datetime(filtered_df['Created Date (WET)']) >= closed_start) &
-                        (pd.to_datetime(filtered_df['Expected Close Date (WET)']) <= closed_end)
+                        (filtered_df['Created Date (WET)'] >= closed_start) &
+                        (pd.to_datetime(filtered_df['Expected Close Date (WET)'], errors='coerce') <= closed_end)
                     ].copy()
+                    st.write(f"Records after date filtering ({closed_start} to {closed_end}):")
+                    st.write(filtered_df)
+                else:
+                    st.warning("No date range provided for Closed report, including all records.")
+
+                st.write(f"Filtered Closed DataFrame ({len(filtered_df)} records):")
+                st.write(filtered_df[['Description', 'Created Date (WET)', 'Expected Close Date (WET)', 'Status', 'Days']])
+
+                if filtered_df.empty:
+                    st.error("No records found for Closed Safety NCR report. Check date range or data.")
+                    logger.info("No records found for Closed Safety NCR report.")
+                    return {"Safety": {"Sites": {}, "Grand_Total": 0}}, ""
+                
             else:  # Open
+                st.write(report_type)
+                
+                # Initial filtering for open records
                 filtered_df = df[
-                    (df['Discipline'] == 'HSE') &
+                    (
+                        (df['Discipline'] == 'HSE') |
+                        (df['Description'].apply(is_safety_record))
+                    ) &
                     (df['Status'] == 'Open') &
-                    (df['Created Date (WET)'] != 'NaT') &
-                    (df['Description'].apply(is_safety_record))
+                    (pd.to_datetime(df['Created Date (WET)']).notna())
                 ].copy()
-                filtered_df['Days_From_Today'] = (today - pd.to_datetime(filtered_df['Created Date (WET)'], errors='coerce')).dt.days
+                filtered_df.loc[:, 'Days_From_Today'] = (today - pd.to_datetime(filtered_df['Created Date (WET)'])).dt.days
                 filtered_df = filtered_df[filtered_df['Days_From_Today'] > 7].copy()
                 if open_until:
                     filtered_df = filtered_df[
@@ -1142,43 +1191,48 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                     ].copy()
 
             if filtered_df.empty:
-                logger.info("No safety records found after filtering")
                 return {"Safety": {"Sites": {}, "Grand_Total": 0}}, ""
 
+            filtered_df.loc[:, 'Created Date (WET)'] = pd.to_datetime(filtered_df['Created Date (WET)']).dt.strftime('%Y-%m-%d')
+            filtered_df.loc[:, 'Expected Close Date (WET)'] = pd.to_datetime(filtered_df['Expected Close Date (WET)']).dt.strftime('%Y-%m-%d')
+
             processed_data = filtered_df.to_dict(orient="records")
-            
+    
             cleaned_data = []
             seen_descriptions = set()
+            # Define standard_sites before use
+            standard_sites = [
+                "Eden-Tower 04", "Eden-Tower 05", "Eden-Tower 06", "Eden-Tower 07", "Common_Area"
+            ]
             for record in processed_data:
                 description = str(record.get("Description", "")).strip()
                 if description and description not in seen_descriptions:
                     seen_descriptions.add(description)
-                    days = record.get("Days", 0)
-                    days_from_today = record.get("Days_From_Today", 0)
-                    if (report_type == "Closed" and days <= 7) or (report_type == "Open" and days_from_today <= 7):
-                        logger.debug(f"Skipping record due to insufficient days: {description}, Days={days}, Days_From_Today={days_from_today}")
-                        continue
                     cleaned_record = {
                         "Description": description,
                         "Created Date (WET)": str(record.get("Created Date (WET)", "")),
                         "Expected Close Date (WET)": str(record.get("Expected Close Date (WET)", "")),
                         "Status": str(record.get("Status", "")),
-                        "Days": days,
-                        "Discipline": "HSE",
-                        "Tower": "External Development"
+                        "Days": record.get("Days", 0),
+                        "Discipline": "HSE"
                     }
                     if report_type == "Open":
-                        cleaned_record["Days_From_Today"] = days_from_today
-
-                    desc_lower = description.lower()
-                    tower_match = re.search(r"(tower|t)\s*-?\s*(\d+|2021|28)", desc_lower, re.IGNORECASE)
-                    cleaned_record["Tower"] = f"Eden-Tower{tower_match.group(2).zfill(2)}" if tower_match else "Common_Area"
-                    logger.debug(f"Tower set to {cleaned_record['Tower']}")
-
-                    cleaned_data.append(cleaned_record)
+                        cleaned_record["Days_From_Today"] = record.get("Days_From_Today", 0)
+                    # Assign tower(s) based on description using normalize_site_name
+                    normalized_towers = normalize_site_name(description)
+                    if isinstance(normalized_towers, tuple):
+                        # Create a record for each tower in the combined CommonArea
+                        for tower in normalized_towers:
+                            tower_record = cleaned_record.copy()
+                            tower_record["Tower"] = tower
+                            cleaned_data.append(tower_record)
+                            logger.debug(f"Tower set to {tower}")
+                    else:
+                        cleaned_record["Tower"] = normalized_towers
+                        cleaned_data.append(cleaned_record)
+                        logger.debug(f"Tower set to {normalized_towers}")
 
             st.write(f"Total {report_type} records to process: {len(cleaned_data)}")
-            logger.debug(f"Processed data: {json.dumps(cleaned_data, indent=2)}")
 
             if not cleaned_data:
                 logger.info("No safety records after deduplication")
@@ -1189,7 +1243,7 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
             if debug_bypass_api:
                 logger.info("Bypassing WatsonX API for debugging")
                 for record in cleaned_data:
-                    if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                    if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Reference", 0) > 7) and record.get("Discipline") == "HSE":
                         site = record["Tower"]
                         if site not in result["Safety"]["Sites"]:
                             result["Safety"]["Sites"][site] = {
@@ -1241,7 +1295,9 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                 logger.debug(f"Chunk data: {json.dumps(chunk, indent=2)}")
 
                 prompt = (
-                    "Generate EXACTLY ONE JSON object matching the format below. Do not repeat input data, generate multiple objects, include code, explanations, or code blocks. Count Safety NCRs by 'Tower' where 'Discipline' is 'HSE' and 'Days' > 7 (closed) or 'Days_From_Today' > 7 (open). Descriptions must contain these keywords (case-insensitive): "
+                    "Generate EXACTLY ONE JSON object matching the format below. Do not repeat input data, generate multiple objects, include code, explanations, or code blocks. "
+                    f"Count Safety NCRs by 'Tower' where 'Discipline' is 'HSE' and {'Days' if report_type == 'Closed' else 'Days_From_Reference'} > 7. "
+                    "Descriptions must contain these keywords (case-insensitive): "
                     "'safety precautions', 'temporary electricity', 'on-site labor is working without wearing safety belt', 'safety norms', 'Missing Cabin Glass – Tower Crane', 'Crane Operator cabin front glass', "
                     "'site on priority basis lifeline is not fixed at the working place', 'operated only after Third Party Inspection and certification crane operated without TPIC', "
                     "'safety precautions are not taken seriously at site Tower crane operator cabin front glass is missing while crane operator is working inside cabin', "
@@ -1249,8 +1305,8 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                     "'safety precautions are not taken seriously', 'firecase', 'Health and Safety Plan', 'noticed that submission of statistics report is regularly delayed', "
                     "'crane operator cabin front glass is missing while crane operator is working inside cabin', 'labor is working without wearing safety belt', 'barricading', 'tank', 'safety shoes', "
                     "'safety belt', 'helmet', 'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard', 'unsafe platform', 'catch net', 'edge protection', 'TPI', 'scaffold', "
-                    "'lifting equipment', 'dust suppression', 'debris chute', 'spill control', 'crane operator', 'halogen lamps', 'fall catch net', 'environmental contamination', 'fire hazard'. "
-                    "Group by 'Tower' (e.g., 'Eden-Tower06', 'Common_Area'). Include all input sites, even with count 0. Collect 'Description', 'Created Date (WET)', 'Expected Close Date (WET)', 'Status' in arrays. Set 'Count' to the number of matching NCRs.\n\n"
+                    "'lifting equipment', 'dust suppression', 'debris chute', 'spill control', 'crane operator', 'halogen lamps', 'fall catch net', 'environmental contamination', 'fire hazard','continuous collapse of soil leading to instability','continuous down slope movement of soil'.\n\n"
+                    "Group by 'Tower' (e.g., 'Eden-Tower 06', 'Common_Area'). Include all input sites, even with count 0. Collect 'Description', 'Created Date (WET)', 'Expected Close Date (WET)', 'Status' in arrays. Set 'Count' to the number of matching NCRs.\n\n"
                     "Output Format:\n"
                     "{\n"
                     '  "Safety": {\n'
@@ -1286,7 +1342,6 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {access_token}"
                 }
-
 
                 try:
                     logger.debug("Initiating WatsonX API call...")
@@ -1343,7 +1398,7 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                                 logger.error(f"JSONDecodeError for chunk {current_chunk}: {str(e)}")
                                 error_placeholder.error(f"Failed to parse JSON for chunk {current_chunk}: {str(e)}")
                                 for record in chunk:
-                                    if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                                    if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Reference", 0) > 7) and record.get("Discipline") == "HSE":
                                         site = record["Tower"]
                                         if site not in result["Safety"]["Sites"]:
                                             result["Safety"]["Sites"][site] = {
@@ -1363,7 +1418,7 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                             logger.error(f"No valid JSON for chunk {current_chunk}: {generated_text}")
                             error_placeholder.error(f"No valid JSON for chunk {current_chunk}")
                             for record in chunk:
-                                if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                                if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Reference", 0) > 7) and record.get("Discipline") == "HSE":
                                     site = record["Tower"]
                                     if site not in result["Safety"]["Sites"]:
                                         result["Safety"]["Sites"][site] = {
@@ -1383,7 +1438,7 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                         logger.error(f"WatsonX API error for chunk {current_chunk}: {response.status_code} - {response.text}")
                         error_placeholder.error(f"WatsonX API error for chunk {current_chunk}: {response.status_code}")
                         for record in chunk:
-                            if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                            if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Reference", 0) > 7) and record.get("Discipline") == "HSE":
                                 site = record["Tower"]
                                 if site not in result["Safety"]["Sites"]:
                                     result["Safety"]["Sites"][site] = {
@@ -1403,7 +1458,7 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                     logger.error(f"ReadTimeoutError for chunk {current_chunk}: {str(e)}")
                     error_placeholder.error(f"Failed to connect to WatsonX API for chunk {current_chunk}: {str(e)}")
                     for record in chunk:
-                        if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                        if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Reference", 0) > 7) and record.get("Discipline") == "HSE":
                             site = record["Tower"]
                             if site not in result["Safety"]["Sites"]:
                                 result["Safety"]["Sites"][site] = {
@@ -1423,7 +1478,7 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                     logger.error(f"RequestException for chunk {current_chunk}: {str(e)}")
                     error_placeholder.error(f"Failed to connect to WatsonX API for chunk {current_chunk}: {str(e)}")
                     for record in chunk:
-                        if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                        if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Reference", 0) > 7) and record.get("Discipline") == "HSE":
                             site = record["Tower"]
                             if site not in result["Safety"]["Sites"]:
                                 result["Safety"]["Sites"][site] = {
@@ -1693,6 +1748,7 @@ def generate_consolidated_ncr_Safety_excel_for_eden(combined_result, report_titl
         return output
  
 
+
 @st.cache_data
 def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_title="NCR"):
     output = io.BytesIO()
@@ -1776,15 +1832,28 @@ def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_t
         ]
         
         def normalize_site_name(site):
+            # Handle tower-specific CommonArea (e.g., Eden-Tower-04-CommonArea or Eden-Tower-04-05-CommonArea)
+            tower_common_match = re.search(r'(?:eden-)?tower-(\d+)(?:-(\d+))?-commonarea', site, re.IGNORECASE)
+            if tower_common_match:
+                # If it's a combined tower CommonArea (e.g., Eden-Tower-04-05-CommonArea)
+                tower_num1 = tower_common_match.group(1)
+                tower_num2 = tower_common_match.group(2)
+                if tower_num2:
+                    # Return a tuple of tower names to handle multiple towers
+                    return (f"Tower {int(tower_num1)}", f"Tower {int(tower_num2)}")
+                else:
+                    # Single tower CommonArea (e.g., Eden-Tower-04-CommonArea)
+                    return f"Tower {int(tower_num1)}"
+            
+            # Handle general CommonArea variations
+            if "CommonArea" in site or "Common Area" in site:
+                return "Common_Area"
+            
             # Handle Eden-Tower-XX format
             if site.startswith("Eden-Tower-"):
                 tower_num = site.split("Eden-Tower-")[1]
                 if tower_num.isdigit():
                     return f"Tower {int(tower_num)}"
-            
-            # Handle tower-specific CommonArea variations
-            if "CommonArea" in site or "Common Area" in site:
-                return "Common_Area"
             
             # Handle regular tower names
             tower_match = re.search(r'(?:eden-)?(?:tower|t)[- ]?(\d+)', site, re.IGNORECASE)
@@ -1796,11 +1865,19 @@ def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_t
 
         # Create mapping for all sites
         all_sites = set(resolved_sites.keys()) | set(open_sites.keys())
-        site_mapping = {k: normalize_site_name(k) for k in all_sites}
+        site_mapping = {}
+        for k in all_sites:
+            normalized = normalize_site_name(k)
+            if isinstance(normalized, tuple):
+                # For combined tower CommonAreas, map to both towers
+                for tower in normalized:
+                    site_mapping.setdefault(k, []).append(tower)
+            else:
+                site_mapping[k] = [normalized]
         
         # Reverse mapping for finding original keys
         def find_original_keys(normalized_site):
-            return [k for k, v in site_mapping.items() if v == normalized_site]
+            return [k for k, v in site_mapping.items() if normalized_site in v]
         
         def map_pour_to_level(pour_name):
             """Map various pour name formats to standardized pour levels"""
@@ -1878,19 +1955,15 @@ def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_t
             original_keys = find_original_keys(site)
             
             if site == "Common_Area":
-                # Handle Common_Area specifically
-                category_map = {
-                    'Civil Finishing': ['FW', 'Civil Finishing', 'Finishing', 'Civil'],
-                    'Structure Works': ['SW', 'Structure Works', 'Structure', 'Works', 'Structural'],
-                    'MEP': ['MEP', 'Electrical', 'Mechanical', 'Plumbing', 'HSE']
-                }
-                
-                # Process all keys that map to Common_Area
+                # Handle Common_Area specifically (only for non-tower-specific Common Areas)
                 for original_key in original_keys:
+                    # Skip tower-specific CommonAreas
+                    if re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE):
+                        continue
+                        
                     # Resolved data
                     if original_key in resolved_sites:
                         site_data = resolved_sites[original_key]
-                        # Use discipline-based counting
                         disciplines = site_data.get("Discipline", [])
                         for discipline in disciplines:
                             if discipline == 'SW':
@@ -1903,7 +1976,6 @@ def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_t
                     # Open data
                     if original_key in open_sites:
                         site_data = open_sites[original_key]
-                        # Use discipline-based counting
                         disciplines = site_data.get("Discipline", [])
                         for discipline in disciplines:
                             if discipline == 'SW':
@@ -1921,67 +1993,87 @@ def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_t
                 
                 # Process each original key that maps to this tower
                 for original_key in original_keys:
-                    # Skip CommonArea keys for tower processing
-                    if "CommonArea" in original_key:
-                        continue
-                        
-                    # Process resolved data
-                    if original_key in resolved_sites:
-                        site_data = resolved_sites[original_key]
-                        disciplines = site_data.get("Discipline", [])
-                        pours = site_data.get("Pours", [])
-                        
-                        for i, discipline in enumerate(disciplines):
-                            # Map discipline to category
-                            if discipline == 'SW':
-                                cat = 'Structure Works'
-                            elif discipline == 'FW':
-                                cat = 'Civil Finishing'
-                            elif discipline in ['MEP', 'HSE']:
-                                cat = 'MEP'
-                            else:
-                                cat = 'Structure Works'  # Default
+                    # Process regular tower data (not CommonArea)
+                    if not re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE) and "CommonArea" not in original_key:
+                        # Process resolved data
+                        if original_key in resolved_sites:
+                            site_data = resolved_sites[original_key]
+                            disciplines = site_data.get("Discipline", [])
+                            pours = site_data.get("Pours", [])
                             
-                            # Get pour info for this discipline
-                            pour_list = pours[i] if i < len(pours) else ['Common']
-                            
-                            for pour in pour_list:
-                                # Use the improved pour mapping function
-                                pour_level = map_pour_to_level(pour)
+                            for i, discipline in enumerate(disciplines):
+                                if discipline == 'SW':
+                                    cat = 'Structure Works'
+                                elif discipline == 'FW':
+                                    cat = 'Civil Finishing'
+                                elif discipline in ['MEP', 'HSE']:
+                                    cat = 'MEP'
+                                else:
+                                    cat = 'Structure Works'
                                 
-                                if pour_level in pour_levels:
-                                    resolved_pour_counts[pour_level][cat] += 1
-                                else:  # pour_level == "common"
-                                    resolved_common_counts[cat] += 1
+                                pour_list = pours[i] if i < len(pours) else ['Common']
+                                for pour in pour_list:
+                                    pour_level = map_pour_to_level(pour)
+                                    if pour_level in pour_levels:
+                                        resolved_pour_counts[pour_level][cat] += 1
+                                    else:
+                                        resolved_common_counts[cat] += 1
+                        
+                        # Process open data
+                        if original_key in open_sites:
+                            site_data = open_sites[original_key]
+                            disciplines = site_data.get("Discipline", [])
+                            pours = site_data.get("Pours", [])
+                            
+                            for i, discipline in enumerate(disciplines):
+                                if discipline == 'SW':
+                                    cat = 'Structure Works'
+                                elif discipline == 'FW':
+                                    cat = 'Civil Finishing'
+                                elif discipline in ['MEP', 'HSE']:
+                                    cat = 'MEP'
+                                else:
+                                    cat = 'Structure Works'
+                                
+                                pour_list = pours[i] if i < len(pours) else ['Common']
+                                for pour in pour_list:
+                                    pour_level = map_pour_to_level(pour)
+                                    if pour_level in pour_levels:
+                                        open_pour_counts[pour_level][cat] += 1
+                                    else:
+                                        open_common_counts[cat] += 1
                     
-                    # Process open data
-                    if original_key in open_sites:
-                        site_data = open_sites[original_key]
-                        disciplines = site_data.get("Discipline", [])
-                        pours = site_data.get("Pours", [])
+                    # Process tower-specific CommonArea data
+                    if re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE):
+                        # Resolved data
+                        if original_key in resolved_sites:
+                            site_data = resolved_sites[original_key]
+                            disciplines = site_data.get("Discipline", [])
+                            for discipline in disciplines:
+                                if discipline == 'SW':
+                                    cat = 'Structure Works'
+                                elif discipline == 'FW':
+                                    cat = 'Civil Finishing'
+                                elif discipline in ['MEP', 'HSE']:
+                                    cat = 'MEP'
+                                else:
+                                    cat = 'Structure Works'
+                                resolved_common_counts[cat] += 1
                         
-                        for i, discipline in enumerate(disciplines):
-                            # Map discipline to category
-                            if discipline == 'SW':
-                                cat = 'Structure Works'
-                            elif discipline == 'FW':
-                                cat = 'Civil Finishing'
-                            elif discipline in ['MEP', 'HSE']:
-                                cat = 'MEP'
-                            else:
-                                cat = 'Structure Works'  # Default
-                            
-                            # Get pour info for this discipline
-                            pour_list = pours[i] if i < len(pours) else ['Common']
-                            
-                            for pour in pour_list:
-                                # Use the improved pour mapping function
-                                pour_level = map_pour_to_level(pour)
-                                
-                                if pour_level in pour_levels:
-                                    open_pour_counts[pour_level][cat] += 1
-                                else:  # pour_level == "common"
-                                    open_common_counts[cat] += 1
+                        # Open data
+                        if original_key in open_sites:
+                            site_data = open_sites[original_key]
+                            disciplines = site_data.get("Discipline", [])
+                            for discipline in disciplines:
+                                if discipline == 'SW':
+                                    cat = 'Structure Works'
+                                elif discipline == 'FW':
+                                    cat = 'Civil Finishing'
+                                elif discipline in ['MEP', 'HSE']:
+                                    cat = 'MEP'
+                                else:
+                                    cat = 'Structure Works'
+                                open_common_counts[cat] += 1
                 
                 # Aggregate pour and CommonArea counts for tower total
                 for cat in categories:
@@ -2005,7 +2097,6 @@ def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_t
             if site != "Common_Area":
                 for idx, level in enumerate(pour_levels, 1):
                     level_total = sum(resolved_pour_counts[level].values()) + sum(open_pour_counts[level].values())
-                    # Write the pour row
                     worksheet.write(row, 0, f"Pour {idx}", site_format)
                     for i, display_cat in enumerate(categories):
                         worksheet.write(row, i+1, resolved_pour_counts[level][display_cat], cell_format)
@@ -2039,22 +2130,24 @@ def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_t
                 detail_worksheet.write(1, col, detail, header_format)
             row = 2
             for site, site_data in data.items():
-                normalized_site = site_mapping.get(site, site)
-                display_site = normalized_site if normalized_site == "Common_Area" else normalized_site
-                descriptions = site_data.get("Descriptions", [])
-                created_dates = site_data.get("Created Date (WET)", [])
-                close_dates = site_data.get("Expected Close Date (WET)", [])
-                statuses = site_data.get("Status", [])
-                disciplines = site_data.get("Discipline", [])
-                max_length = max(len(descriptions), len(created_dates), len(close_dates), len(statuses), len(disciplines))
-                for i in range(max_length):
-                    detail_worksheet.write(row, 0, display_site, default_site_format)
-                    detail_worksheet.write(row, 1, descriptions[i] if i < len(descriptions) else "", default_cell_format)
-                    detail_worksheet.write(row, 2, created_dates[i] if i < len(created_dates) else "", default_cell_format)
-                    detail_worksheet.write(row, 3, close_dates[i] if i < len(close_dates) else "", default_cell_format)
-                    detail_worksheet.write(row, 4, statuses[i] if i < len(statuses) else "", default_cell_format)
-                    detail_worksheet.write(row, 5, disciplines[i] if i < len(disciplines) else "", default_cell_format)
-                    row += 1
+                normalized_sites = site_mapping.get(site, [site])
+                # For tower-specific CommonAreas, display under the respective tower(s)
+                for normalized_site in normalized_sites:
+                    display_site = normalized_site if normalized_site == "Common_Area" else normalized_site
+                    descriptions = site_data.get("Descriptions", [])
+                    created_dates = site_data.get("Created Date (WET)", [])
+                    close_dates = site_data.get("Expected Close Date (WET)", [])
+                    statuses = site_data.get("Status", [])
+                    disciplines = site_data.get("Discipline", [])
+                    max_length = max(len(descriptions), len(created_dates), len(close_dates), len(statuses), len(disciplines))
+                    for i in range(max_length):
+                        detail_worksheet.write(row, 0, display_site, default_site_format)
+                        detail_worksheet.write(row, 1, descriptions[i] if i < len(descriptions) else "", default_cell_format)
+                        detail_worksheet.write(row, 2, created_dates[i] if i < len(created_dates) else "", default_cell_format)
+                        detail_worksheet.write(row, 3, close_dates[i] if i < len(close_dates) else "", default_cell_format)
+                        detail_worksheet.write(row, 4, statuses[i] if i < len(statuses) else "", default_cell_format)
+                        detail_worksheet.write(row, 5, disciplines[i] if i < len(disciplines) else "", default_cell_format)
+                        row += 1
 
         if resolved_sites:
             write_detail_sheet("Closed NCR Details", resolved_sites, "Closed NCR Details")
@@ -2167,6 +2260,38 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
             
             return "common"
 
+        # Modified normalize_site_name to support combined tower Common Areas
+        def normalize_site_name(site):
+            # Handle tower-specific CommonArea (e.g., Eden-Tower-04-CommonArea or Eden-Tower-04-05-CommonArea)
+            tower_common_match = re.search(r'(?:eden-)?tower-(\d+)(?:-(\d+))?-commonarea', site, re.IGNORECASE)
+            if tower_common_match:
+                tower_num1 = tower_common_match.group(1).zfill(2)
+                tower_num2 = tower_common_match.group(2).zfill(2) if tower_common_match.group(2) else None
+                if tower_num2:
+                    # Return a tuple for combined tower CommonArea
+                    return (f"Eden-Tower {tower_num1}", f"Eden-Tower {tower_num2}")
+                else:
+                    # Single tower CommonArea
+                    return f"Eden-Tower {tower_num1}"
+            
+            # Handle general CommonArea variations
+            if "CommonArea" in site or "Common Area" in site:
+                return "Common_Area"
+            
+            # Handle Eden-Tower-XX format
+            if site.startswith("Eden-Tower-"):
+                tower_num = site.split("Eden-Tower-")[1]
+                if tower_num.isdigit():
+                    return f"Eden-Tower {tower_num.zfill(2)}"
+            
+            # Handle regular tower names
+            tower_match = re.search(r'(?:eden-)?(?:tower|t)[- ]?(\d+)', site, re.IGNORECASE)
+            if tower_match:
+                num = tower_match.group(1).zfill(2)
+                return f"Eden-Tower {num}"
+            
+            return site
+
         # 1. Combined NCR Report
         combined_result = all_reports.get("Combined_NCR", {})
         report_title_ncr = f"NCR: {date_part}"
@@ -2189,19 +2314,21 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
             "Eden-Tower 04", "Eden-Tower 05", "Eden-Tower 06", "Eden-Tower 07", "Common_Area"
         ]
         
-        def normalize_site_name(site):
-            if site == "Common_Area":
-                return site
-            if "CommonArea" in site or "Common Area" in site:
-                return "Common_Area"
-            match = re.search(r'(?:eden-)?(?:tower|t)[- ]?(\d+)', site, re.IGNORECASE)
-            if match:
-                num = match.group(1).zfill(2)
-                return f"Eden-Tower {num}"
-            return site
-
-        site_mapping = {k: normalize_site_name(k) for k in (resolved_sites.keys() | open_sites.keys())}
-        sorted_sites = sorted(standard_sites, key=lambda x: (x != "Common_Area", x))
+        # Create mapping for all sites
+        all_sites = set(resolved_sites.keys()) | set(open_sites.keys())
+        site_mapping = {}
+        for k in all_sites:
+            normalized = normalize_site_name(k)
+            if isinstance(normalized, tuple):
+                # For combined tower CommonAreas, map to both towers
+                for tower in normalized:
+                    site_mapping.setdefault(k, []).append(tower)
+            else:
+                site_mapping[k] = [normalized]
+        
+        # Helper function to find original keys
+        def find_original_keys(normalized_site):
+            return [k for k, v in site_mapping.items() if normalized_site in v]
         
         worksheet.merge_range('A1:H1', report_title_ncr, title_format)
         row = 1
@@ -2228,10 +2355,7 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
         row = 3
         site_totals = {}
         
-        for site in sorted_sites:
-            original_resolved_key = next((k for k, v in site_mapping.items() if v == site), None)
-            original_open_key = next((k for k, v in site_mapping.items() if v == site), None)
-            
+        for site in standard_sites:
             formats = tower_formats.get(site, {})
             tower_total_format = formats.get('tower_total', workbook.add_format({
                 'bold': True, 'align': 'left', 'valign': 'vcenter', 'border': 1, 'fg_color': '#D3D3D3'
@@ -2242,62 +2366,96 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
             resolved_counts = {'Civil Finishing': 0, 'Structure Works': 0, 'MEP': 0}
             open_counts = {'Civil Finishing': 0, 'Structure Works': 0, 'MEP': 0}
             
-            if "Tower" in site and site != "Common_Area":
+            # Find all original keys that map to this normalized site
+            original_keys = find_original_keys(site)
+            
+            if site == "Common_Area":
+                # Handle Common_Area specifically (only for non-tower-specific Common Areas)
+                for original_key in original_keys:
+                    # Skip tower-specific CommonAreas
+                    if re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE):
+                        continue
+                        
+                    # Resolved data
+                    if original_key in resolved_sites:
+                        disciplines = resolved_sites[original_key].get("Discipline", [])
+                        for discipline in disciplines:
+                            if discipline == 'FW':
+                                resolved_counts['Civil Finishing'] += 1
+                            elif discipline == 'SW':
+                                resolved_counts['Structure Works'] += 1
+                            elif discipline in ['MEP', 'HSE']:
+                                resolved_counts['MEP'] += 1
+                    
+                    # Open data
+                    if original_key in open_sites:
+                        disciplines = open_sites[original_key].get("Discipline", [])
+                        for discipline in disciplines:
+                            if discipline == 'FW':
+                                open_counts['Civil Finishing'] += 1
+                            elif discipline == 'SW':
+                                open_counts['Structure Works'] += 1
+                            elif discipline in ['MEP', 'HSE']:
+                                open_counts['MEP'] += 1
+            
+            else:  # Tower sites
                 resolved_pour_counts = {level: {'Civil Finishing': 0, 'Structure Works': 0, 'MEP': 0} for level in pour_levels}
                 open_pour_counts = {level: {'Civil Finishing': 0, 'Structure Works': 0, 'MEP': 0} for level in pour_levels}
                 resolved_common_counts = {'Civil Finishing': 0, 'Structure Works': 0, 'MEP': 0}
                 open_common_counts = {'Civil Finishing': 0, 'Structure Works': 0, 'MEP': 0}
                 
-                if original_resolved_key and original_resolved_key in resolved_sites:
-                    disciplines = resolved_sites[original_resolved_key].get("Discipline", [])
-                    pours = resolved_sites[original_resolved_key].get("Pours", [])
-                    for i, discipline in enumerate(disciplines):
-                        pour_list = pours[i] if i < len(pours) else ['Common']
-                        cat = 'Civil Finishing' if discipline == 'FW' else 'Structure Works' if discipline == 'SW' else 'MEP'
-                        for pour in pour_list:
-                            pour_level = map_pour_to_level(pour)
-                            if pour_level in pour_levels:
-                                resolved_pour_counts[pour_level][cat] += 1
-                            else:
+                # Process each original key that maps to this tower
+                for original_key in original_keys:
+                    # Process regular tower data (not CommonArea)
+                    if not re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE) and "CommonArea" not in original_key:
+                        # Resolved data
+                        if original_key in resolved_sites:
+                            disciplines = resolved_sites[original_key].get("Discipline", [])
+                            pours = resolved_sites[original_key].get("Pours", [])
+                            for i, discipline in enumerate(disciplines):
+                                pour_list = pours[i] if i < len(pours) else ['Common']
+                                cat = 'Civil Finishing' if discipline == 'FW' else 'Structure Works' if discipline == 'SW' else 'MEP'
+                                for pour in pour_list:
+                                    pour_level = map_pour_to_level(pour)
+                                    if pour_level in pour_levels:
+                                        resolved_pour_counts[pour_level][cat] += 1
+                                    else:
+                                        resolved_common_counts[cat] += 1
+                        
+                        # Open data
+                        if original_key in open_sites:
+                            disciplines = open_sites[original_key].get("Discipline", [])
+                            pours = open_sites[original_key].get("Pours", [])
+                            for i, discipline in enumerate(disciplines):
+                                pour_list = pours[i] if i < len(pours) else ['Common']
+                                cat = 'Civil Finishing' if discipline == 'FW' else 'Structure Works' if discipline == 'SW' else 'MEP'
+                                for pour in pour_list:
+                                    pour_level = map_pour_to_level(pour)
+                                    if pour_level in pour_levels:
+                                        open_pour_counts[pour_level][cat] += 1
+                                    else:
+                                        open_common_counts[cat] += 1
+                    
+                    # Process tower-specific CommonArea data
+                    if re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE):
+                        # Resolved data
+                        if original_key in resolved_sites:
+                            disciplines = resolved_sites[original_key].get("Discipline", [])
+                            for discipline in disciplines:
+                                cat = 'Civil Finishing' if discipline == 'FW' else 'Structure Works' if discipline == 'SW' else 'MEP'
                                 resolved_common_counts[cat] += 1
-                
-                if original_open_key and original_open_key in open_sites:
-                    disciplines = open_sites[original_open_key].get("Discipline", [])
-                    pours = open_sites[original_open_key].get("Pours", [])
-                    for i, discipline in enumerate(disciplines):
-                        pour_list = pours[i] if i < len(pours) else ['Common']
-                        cat = 'Civil Finishing' if discipline == 'FW' else 'Structure Works' if discipline == 'SW' else 'MEP'
-                        for pour in pour_list:
-                            pour_level = map_pour_to_level(pour)
-                            if pour_level in pour_levels:
-                                open_pour_counts[pour_level][cat] += 1
-                            else:
+                        
+                        # Open data
+                        if original_key in open_sites:
+                            disciplines = open_sites[original_key].get("Discipline", [])
+                            for discipline in disciplines:
+                                cat = 'Civil Finishing' if discipline == 'FW' else 'Structure Works' if discipline == 'SW' else 'MEP'
                                 open_common_counts[cat] += 1
                 
                 # Aggregate pour and CommonArea counts
                 for cat in categories:
                     resolved_counts[cat] = sum(resolved_pour_counts[level][cat] for level in pour_levels) + resolved_common_counts[cat]
                     open_counts[cat] = sum(open_pour_counts[level][cat] for level in pour_levels) + open_common_counts[cat]
-            
-            else:  # Common_Area
-                if original_resolved_key and original_resolved_key in resolved_sites:
-                    disciplines = resolved_sites[original_resolved_key].get("Discipline", [])
-                    for discipline in disciplines:
-                        if discipline == 'FW':
-                            resolved_counts['Civil Finishing'] += 1
-                        elif discipline == 'SW':
-                            resolved_counts['Structure Works'] += 1
-                        elif discipline in ['MEP', 'HSE']:
-                            resolved_counts['MEP'] += 1
-                if original_open_key and original_open_key in open_sites:
-                    disciplines = open_sites[original_open_key].get("Discipline", [])
-                    for discipline in disciplines:
-                        if discipline == 'FW':
-                            open_counts['Civil Finishing'] += 1
-                        elif discipline == 'SW':
-                            open_counts['Structure Works'] += 1
-                        elif discipline in ['MEP', 'HSE']:
-                            open_counts['MEP'] += 1
             
             site_total = sum(resolved_counts.values()) + sum(open_counts.values())
             
@@ -2346,21 +2504,23 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
                 detail_worksheet.write(1, col, header, header_format)
             row = 2
             for site, site_data in data.items():
-                normalized_site = site_mapping.get(site, site)
-                descriptions = site_data.get("Descriptions", [])
-                created_dates = site_data.get("Created Date (WET)", [])
-                close_dates = site_data.get("Expected Close Date (WET)", [])
-                statuses = site_data.get("Status", [])
-                disciplines = site_data.get("Discipline", [])
-                max_length = max(len(descriptions), len(created_dates), len(close_dates), len(statuses), len(disciplines))
-                for i in range(max_length):
-                    detail_worksheet.write(row, 0, normalized_site, default_site_format)
-                    detail_worksheet.write(row, 1, descriptions[i] if i < len(descriptions) else "", description_format)
-                    detail_worksheet.write(row, 2, created_dates[i] if i < len(created_dates) else "", default_cell_format)
-                    detail_worksheet.write(row, 3, close_dates[i] if i < len(close_dates) else "", default_cell_format)
-                    detail_worksheet.write(row, 4, statuses[i] if i < len(statuses) else "", default_cell_format)
-                    detail_worksheet.write(row, 5, disciplines[i] if i < len(disciplines) else "", default_cell_format)
-                    row += 1
+                normalized_sites = site_mapping.get(site, [site])
+                for normalized_site in normalized_sites:
+                    display_site = normalized_site if normalized_site == "Common_Area" else normalized_site
+                    descriptions = site_data.get("Descriptions", [])
+                    created_dates = site_data.get("Created Date (WET)", [])
+                    close_dates = site_data.get("Expected Close Date (WET)", [])
+                    statuses = site_data.get("Status", [])
+                    disciplines = site_data.get("Discipline", [])
+                    max_length = max(len(descriptions), len(created_dates), len(close_dates), len(statuses), len(disciplines))
+                    for i in range(max_length):
+                        detail_worksheet.write(row, 0, display_site, default_site_format)
+                        detail_worksheet.write(row, 1, descriptions[i] if i < len(descriptions) else "", description_format)
+                        detail_worksheet.write(row, 2, created_dates[i] if i < len(created_dates) else "", default_cell_format)
+                        detail_worksheet.write(row, 3, close_dates[i] if i < len(close_dates) else "", default_cell_format)
+                        detail_worksheet.write(row, 4, statuses[i] if i < len(statuses) else "", default_cell_format)
+                        detail_worksheet.write(row, 5, disciplines[i] if i < len(disciplines) else "", default_cell_format)
+                        row += 1
 
         if resolved_sites:
             write_detail_sheet("Closed NCR Details", resolved_sites, "Closed NCR Details")
@@ -2377,14 +2537,26 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
             worksheet.write(row, 0, 'Site', header_format)
             worksheet.write(row, 1, f'No. of {report_type} NCRs beyond 7 days', header_format)
             sites_data = data.get(report_type, {}).get("Sites", {})
-            site_mapping = {k: normalize_site_name(k) for k in sites_data.keys()}
+            site_mapping_safety = {}
+            for k in sites_data.keys():
+                normalized = normalize_site_name(k)
+                if isinstance(normalized, tuple):
+                    for tower in normalized:
+                        site_mapping_safety.setdefault(k, []).append(tower)
+                else:
+                    site_mapping_safety[k] = [normalized]
+            
             row = 2
-            for site in sorted_sites:
+            for site in standard_sites:
+                original_keys = [k for k, v in site_mapping_safety.items() if site in v]
+                value = 0
+                for original_key in original_keys:
+                    if not re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE) or site != "Common_Area":
+                        value += sites_data.get(original_key, {}).get("Count", 0)
                 worksheet.write(row, 0, site, default_site_format)
-                original_key = next((k for k, v in site_mapping.items() if v == site), None)
-                value = sites_data[original_key].get("Count", 0) if original_key and original_key in sites_data else 0
                 worksheet.write(row, 1, value, default_cell_format)
                 row += 1
+            
             worksheet_details = workbook.add_worksheet(truncate_sheet_name(f'{report_type} NCR {sheet_type} Details {date_part}'))
             worksheet_details.set_column('A:A', 20)
             worksheet_details.set_column('B:B', 60)
@@ -2397,23 +2569,24 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
             for col, header in enumerate(headers):
                 worksheet_details.write(row, col, header, header_format)
             row = 2
-            for site in sorted_sites:
-                original_key = next((k for k, v in site_mapping.items() if v == site), None)
-                if original_key and original_key in sites_data:
-                    site_data = sites_data[original_key]
-                    descriptions = site_data.get("Descriptions", [])
-                    created_dates = site_data.get("Created Date (WET)", [])
-                    close_dates = site_data.get("Expected Close Date (WET)", [])
-                    statuses = site_data.get("Status", [])
-                    max_length = max(len(descriptions), len(created_dates), len(close_dates), len(statuses))
-                    for i in range(max_length):
-                        worksheet_details.write(row, 0, site, default_site_format)
-                        worksheet_details.write(row, 1, descriptions[i] if i < len(descriptions) else "", description_format)
-                        worksheet_details.write(row, 2, created_dates[i] if i < len(created_dates) else "", default_cell_format)
-                        worksheet_details.write(row, 3, close_dates[i] if i < len(close_dates) else "", default_cell_format)
-                        worksheet_details.write(row, 4, statuses[i] if i < len(statuses) else "", default_cell_format)
-                        worksheet_details.write(row, 5, "HSE", default_cell_format)
-                        row += 1
+            for site in standard_sites:
+                original_keys = [k for k, v in site_mapping_safety.items() if site in v]
+                for original_key in original_keys:
+                    if not re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE) or site != "Common_Area":
+                        site_data = sites_data.get(original_key, {})
+                        descriptions = site_data.get("Descriptions", [])
+                        created_dates = site_data.get("Created Date (WET)", [])
+                        close_dates = site_data.get("Expected Close Date (WET)", [])
+                        statuses = site_data.get("Status", [])
+                        max_length = max(len(descriptions), len(created_dates), len(close_dates), len(statuses))
+                        for i in range(max_length):
+                            worksheet_details.write(row, 0, site, default_site_format)
+                            worksheet_details.write(row, 1, descriptions[i] if i < len(descriptions) else "", description_format)
+                            worksheet_details.write(row, 2, created_dates[i] if i < len(created_dates) else "", default_cell_format)
+                            worksheet_details.write(row, 3, close_dates[i] if i < len(close_dates) else "", default_cell_format)
+                            worksheet_details.write(row, 4, statuses[i] if i < len(statuses) else "", default_cell_format)
+                            worksheet_details.write(row, 5, "HSE", default_cell_format)
+                            row += 1
 
         safety_closed_data = all_reports.get("Safety_NCR_Closed", {})
         report_title_safety = f"Safety NCR: {date_part}"
@@ -2431,10 +2604,6 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
 
 # Streamlit UI
 
-
-# Generate Combined NCR Report
-
-
 # Helper function to generate report title
 def generate_report_title(prefix):
     now = datetime.now()  # Current date: April 25, 2025
@@ -2445,7 +2614,10 @@ def generate_report_title(prefix):
 
 # Generate Safety NCR Report
 
+
 # Generate Housekeeping NCR Report
 
 
 # All Reports Button
+
+
