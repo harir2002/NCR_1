@@ -625,7 +625,7 @@ def generate_ncr_report_for_eligo(df: pd.DataFrame, report_type: str, start_date
                 return {"error": f"Failed to obtain access token: {str(e)}"}, ""
 
             all_results = {report_type: {"Sites": {}, "Grand_Total": 0}}
-            chunk_size = int(os.getenv("CHUNK_SIZE", 50))
+            chunk_size = int(os.getenv("CHUNK_SIZE", 15))
 
             for i in range(0, len(cleaned_data), chunk_size):
                 chunk = cleaned_data[i:i + chunk_size]
@@ -1307,12 +1307,15 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
 
             # Define safety keywords
             safety_keywords = [
-                'safety precautions', 'temporary electricity', 'safety norms', 'safety belt', 'helmet',
-                'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard', 'unsafe platform',
-                'catch net', 'edge protection', 'TPI', 'scaffold', 'lifting equipment', 'dust suppression',
-                'debris chute', 'spill control', 'crane operator', 'halogen lamps', 'fall catch net',
-                'environmental contamination', 'fire hazard'
-            ]
+                            'safety precautions', 'temporary electricity', 'safety norms', 'safety belt', 'helmet',
+                            'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard', 'unsafe platform',
+                            'catch net', 'edge protection', 'TPI', 'scaffold', 'lifting equipment', 'dust suppression',
+                            'debris chute', 'spill control', 'crane operator', 'halogen lamps', 'fall catch net',
+                            'environmental contamination', 'fire hazard',
+                            # New additions based on your description
+                            'working at height', 'PPE kit', 'HSE norms', 'negligence in supervision', 'violation of HSE',
+                            'tower h', 'non-tower area', 'nta'
+                        ]
 
             def is_safety_record(description):
                 if description is None or not isinstance(description, str):
@@ -1339,23 +1342,48 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                         (pd.to_datetime(filtered_df['Created Date (WET)']) >= closed_start) &
                         (pd.to_datetime(filtered_df['Expected Close Date (WET)']) <= closed_end)
                     ].copy()
-            else:  # Open
-                filtered_df = df[
-                    (df['Discipline'] == 'HSE') &
-                    (df['Status'] == 'Open') &
-                    (df['Created Date (WET)'] != 'NaT') &
-                    (df['Description'].apply(is_safety_record))
-                ].copy()
-                filtered_df['Days_From_Today'] = (today - pd.to_datetime(filtered_df['Created Date (WET)'], errors='coerce')).dt.days
-                filtered_df = filtered_df[filtered_df['Days_From_Today'] > 7].copy()
+            else:  # Open - FIXED LOGIC
+                # DEBUG: Add logging to see filtering steps
+                logger.debug(f"Initial DataFrame size: {len(df)}")
+                
+                # Step 1: Filter by Status = 'Open'
+                open_records = df[df['Status'] == 'Open'].copy()
+                logger.debug(f"Records with Status='Open': {len(open_records)}")
+                
+                # Step 2: Filter by valid Created Date
+                open_records = open_records[pd.to_datetime(open_records['Created Date (WET)']).notna()].copy()
+                logger.debug(f"Records with valid Created Date: {len(open_records)}")
+                
+                # Step 3: Calculate days from today
+                open_records.loc[:, 'Days_From_Today'] = (today - pd.to_datetime(open_records['Created Date (WET)'])).dt.days
+                logger.debug(f"Days_From_Today calculated for {len(open_records)} records")
+                
+                # Step 4: Filter by Days_From_Today > 7
+                open_records = open_records[open_records['Days_From_Today'] > 7].copy()
+                logger.debug(f"Records with Days_From_Today > 7: {len(open_records)}")
+                
+                # Step 5: Apply date filter if specified
                 if open_until:
-                    filtered_df = filtered_df[
-                        (pd.to_datetime(filtered_df['Created Date (WET)']) <= open_until)
+                    open_records = open_records[
+                        (pd.to_datetime(open_records['Created Date (WET)']) <= open_until)
                     ].copy()
+                    logger.debug(f"Records after date filter (until {open_until}): {len(open_records)}")
+                
+                # Step 6: CORRECTED LOGIC - Filter by HSE discipline AND safety keywords in description
+                # For open records, we want HSE records that ALSO have safety keywords (same as closed)
+                filtered_df = open_records[
+                    (open_records['Discipline'] == 'HSE') &
+                    (open_records['Description'].apply(is_safety_record))
+                ].copy()
+                
+                logger.debug(f"Final filtered records (HSE AND safety keywords): {len(filtered_df)}")
 
             if filtered_df.empty:
                 logger.info("No safety records found after filtering")
                 return {"Safety": {"Sites": {}, "Grand_Total": 0}}, ""
+
+            # DEBUG: Log sample of filtered data
+            logger.debug(f"Sample of filtered data:\n{filtered_df[['Description', 'Discipline', 'Status', 'Created Date (WET)']].head()}")
 
             processed_data = filtered_df.to_dict(orient="records")
             
@@ -1367,16 +1395,22 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                     seen_descriptions.add(description)
                     days = record.get("Days", 0)
                     days_from_today = record.get("Days_From_Today", 0)
-                    if (report_type == "Closed" and days <= 7) or (report_type == "Open" and days_from_today <= 7):
-                        logger.debug(f"Skipping record due to insufficient days: {description}, Days={days}, Days_From_Today={days_from_today}")
+                    
+                    # DEBUG: Log why records might be skipped
+                    if (report_type == "Closed" and days <= 7):
+                        logger.debug(f"Skipping closed record due to insufficient days: {description}, Days={days}")
                         continue
+                    elif (report_type == "Open" and days_from_today <= 7):
+                        logger.debug(f"Skipping open record due to insufficient days from today: {description}, Days_From_Today={days_from_today}")
+                        continue
+                    
                     cleaned_record = {
                         "Description": description,
                         "Created Date (WET)": str(record.get("Created Date (WET)", "")),
                         "Expected Close Date (WET)": str(record.get("Expected Close Date (WET)", "")),
                         "Status": str(record.get("Status", "")),
                         "Days": days,
-                        "Discipline": "HSE",
+                        "Discipline": str(record.get("Discipline", "")),
                         "Tower": "External Development"
                     }
                     if report_type == "Open":
@@ -1385,15 +1419,16 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                     desc_lower = description.lower()
                     tower_match = re.search(r"(tower|t)\s*-?\s*([A-Za-z])", desc_lower, re.IGNORECASE)
                     cleaned_record["Tower"] = f"Eden-Tower{tower_match.group(2).upper().zfill(2)}" if tower_match else "Common_Area"
-                    logger.debug(f"Tower set to {cleaned_record['Tower']}")
+                    logger.debug(f"Tower set to {cleaned_record['Tower']} for description: {description[:50]}...")
 
                     cleaned_data.append(cleaned_record)
 
             st.write(f"Total {report_type} records to process: {len(cleaned_data)}")
-            logger.debug(f"Processed data: {json.dumps(cleaned_data, indent=2)}")
+            logger.debug(f"Cleaned data count: {len(cleaned_data)}")
+            logger.debug(f"Sample cleaned record: {cleaned_data[0] if cleaned_data else 'No records'}")
 
             if not cleaned_data:
-                logger.info("No safety records after deduplication")
+                logger.info("No safety records after deduplication and processing")
                 return {"Safety": {"Sites": {}, "Grand_Total": 0}}, ""
 
             result = {"Safety": {"Sites": {}, "Grand_Total": 0}}
@@ -1401,7 +1436,15 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
             if debug_bypass_api:
                 logger.info("Bypassing WatsonX API for debugging")
                 for record in cleaned_data:
-                    if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                    # CORRECTED: For both open and closed records, check HSE discipline AND safety keywords
+                    is_hse = record.get("Discipline") == "HSE"
+                    has_safety_keywords = is_safety_record(record["Description"])
+                    days_check = record.get("Days", 0) > 7 if report_type == "Closed" else record.get("Days_From_Today", 0) > 7
+                    
+                    logger.debug(f"Record check - HSE: {is_hse}, Safety keywords: {has_safety_keywords}, Days check: {days_check}")
+                    
+                    # CORRECTED: Use AND logic for both open and closed records
+                    if is_hse and has_safety_keywords and days_check:
                         site = record["Tower"]
                         if site not in result["Safety"]["Sites"]:
                             result["Safety"]["Sites"][site] = {
@@ -1409,6 +1452,7 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                                 "Descriptions": [],
                                 "Created Date (WET)": [],
                                 "Expected Close Date (WET)": [],
+                                "Discipline": record.get("Discipline", ""),
                                 "Status": []
                             }
                         result["Safety"]["Sites"][site]["Descriptions"].append(record["Description"])
@@ -1417,9 +1461,14 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                         result["Safety"]["Sites"][site]["Status"].append(record["Status"])
                         result["Safety"]["Sites"][site]["Count"] += 1
                         result["Safety"]["Grand_Total"] += 1
+                        logger.debug(f"Added record to {site}: {record['Description'][:50]}...")
+                    else:
+                        logger.debug(f"Skipped record: HSE={is_hse}, Safety={has_safety_keywords}, Days={days_check}")
+                        
                 logger.debug(f"Debug result: {json.dumps(result, indent=2)}")
                 return result, json.dumps(result)
 
+            # Rest of the function remains the same...
             access_token = get_access_token(API_KEY)
             if not access_token:
                 logger.error("Failed to obtain access token")
@@ -1429,16 +1478,17 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
             chunk_size = 10
             total_chunks = (len(cleaned_data) + chunk_size - 1) // chunk_size
 
+            # Enhanced session configuration with longer timeouts and better retry strategy
             session = requests.Session()
             retry_strategy = Retry(
-                total=3,
-                backoff_factor=2,
-                status_forcelist=[500, 502, 503, 504, 429, 408],
+                total=5,  # Increased retries
+                backoff_factor=3,  # Longer backoff
+                status_forcelist=[500, 502, 503, 504, 429, 408, 524],  # Added 524 timeout error
                 allowed_methods=["POST"],
                 raise_on_redirect=True,
-                raise_on_status=True
+                raise_on_status=False  # Don't raise on status to handle manually
             )
-            adapter = HTTPAdapter(max_retries=retry_strategy)
+            adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
             session.mount("https://", adapter)
 
             progress_placeholder = st.empty()
@@ -1455,9 +1505,10 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                 logger.debug(f"Processing chunk {current_chunk}/{total_chunks}: {json.dumps(chunk, indent=2)}")
 
                 prompt = (
-                    "Generate ONE JSON object in the exact format below. Do not include code, explanations, multiple objects, or repeat input data. Count Safety NCRs by 'Tower' where 'Discipline' is 'HSE'. For open records, use 'Days_From_Today' > 7; for closed, use 'Days' > 7. Descriptions must contain these keywords (case-insensitive): "
+                    "Generate ONE JSON object in the exact format below. Do not include code, explanations, multiple objects, or repeat input data. Count Safety NCRs by 'Tower' where 'Discipline' is 'HSE' AND description contains safety keywords. For open records, use 'Days_From_Today' > 7; for closed, use 'Days' > 7. Descriptions must contain these keywords (case-insensitive): "
                     "'safety precautions', 'temporary electricity', 'safety norms', 'safety belt', 'helmet', 'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard', 'unsafe platform', "
-                    "'catch net', 'edge protection', 'TPI', 'scaffold', 'lifting equipment', 'dust suppression', 'debris chute', 'spill control', 'crane operator', 'halogen lamps', 'fall catch net', "
+                    "'catch net', 'edge protection', 'TPI', 'scaffold', 'lifting equipment', 'dust suppression', 'debris chute', 'spill control', 'crane operator', 'halogen lamps', 'fall catch net', 'PPE'," 
+                    "'working at height', 'PPE kit', 'HSE norms', 'negligence in supervision', 'violation of HSE','tower h', 'non-tower area', 'nta'"
                     "'environmental contamination', 'fire hazard'. Group by 'Tower' (e.g., 'Eden-Tower06'). Include all input sites, even with count 0. Collect 'Description', 'Created Date (WET)', 'Expected Close Date (WET)', 'Status' in arrays.\n\n"
                     "Output Format:\n"
                     "{\n"
@@ -1481,7 +1532,7 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                     "input": prompt,
                     "parameters": {
                         "decoding_method": "greedy",
-                        "max_new_tokens": 2000,  # Increased to handle larger JSON outputs
+                        "max_new_tokens": 1500,  # Reduced to avoid timeout
                         "min_new_tokens": 0,
                         "temperature": 0.001,
                         "n": 1
@@ -1497,7 +1548,14 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
 
                 try:
                     logger.debug(f"Sending WatsonX payload for chunk {current_chunk}: {json.dumps(payload, indent=2)}")
-                    response = session.post(WATSONX_API_URL, headers=headers, json=payload, verify=certifi.where(), timeout=30)
+                    # Increased timeout to 60 seconds
+                    response = session.post(
+                        WATSONX_API_URL, 
+                        headers=headers, 
+                        json=payload, 
+                        verify=certifi.where(), 
+                        timeout=60  # Extended timeout
+                    )
                     logger.info(f"WatsonX API response status for chunk {current_chunk}: {response.status_code}")
 
                     if response.status_code == 200:
@@ -1523,7 +1581,12 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                             error_placeholder.error(f"Failed to parse JSON for chunk {current_chunk}: Invalid JSON format")
                             # Fallback to manual processing
                             for record in chunk:
-                                if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                                is_hse = record.get("Discipline") == "HSE"
+                                has_safety_keywords = is_safety_record(record["Description"])
+                                days_check = record.get("Days", 0) > 7 if report_type == "Closed" else record.get("Days_From_Today", 0) > 7
+                                
+                                # CORRECTED: Use AND logic consistently
+                                if is_hse and has_safety_keywords and days_check:
                                     site = record["Tower"]
                                     if site not in result["Safety"]["Sites"]:
                                         result["Safety"]["Sites"][site] = {
@@ -1568,9 +1631,13 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                         else:
                             logger.warning(f"Unexpected JSON format for chunk {current_chunk}: {json_str}")
                             error_placeholder.error(f"Unexpected JSON format for chunk {current_chunk}")
-                            # Fallback to manual processing
+                            # Fallback to manual processing - CORRECTED
                             for record in chunk:
-                                if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                                is_hse = record.get("Discipline") == "HSE"
+                                has_safety_keywords = is_safety_record(record["Description"])
+                                days_check = record.get("Days", 0) > 7 if report_type == "Closed" else record.get("Days_From_Today", 0) > 7
+                                
+                                if is_hse and has_safety_keywords and days_check:
                                     site = record["Tower"]
                                     if site not in result["Safety"]["Sites"]:
                                         result["Safety"]["Sites"][site] = {
@@ -1589,9 +1656,13 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                     else:
                         logger.error(f"WatsonX API error for chunk {current_chunk}: {response.status_code} - {response.text}")
                         error_placeholder.error(f"WatsonX API error for chunk {current_chunk}: {response.status_code} - {response.text}")
-                        # Fallback to manual processing
+                        # Fallback to manual processing - CORRECTED
                         for record in chunk:
-                            if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                            is_hse = record.get("Discipline") == "HSE"
+                            has_safety_keywords = is_safety_record(record["Description"])
+                            days_check = record.get("Days", 0) > 7 if report_type == "Closed" else record.get("Days_From_Today", 0) > 7
+                            
+                            if is_hse and has_safety_keywords and days_check:
                                 site = record["Tower"]
                                 if site not in result["Safety"]["Sites"]:
                                     result["Safety"]["Sites"][site] = {
@@ -1607,12 +1678,16 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                                 result["Safety"]["Sites"][site]["Status"].append(record["Status"])
                                 result["Safety"]["Sites"][site]["Count"] += 1
                                 result["Safety"]["Grand_Total"] += 1
-                except requests.exceptions.ReadTimeout as e:
-                    logger.error(f"ReadTimeoutError for chunk {current_chunk}: {str(e)}")
-                    error_placeholder.error(f"Failed to connect to WatsonX API for chunk {current_chunk}: {str(e)}")
-                    # Fallback to manual processing
+                except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
+                    logger.error(f"Timeout error for chunk {current_chunk}: {str(e)}")
+                    st.warning(f"⚠️ Timeout for chunk {current_chunk}. Using fallback processing...")
+                    # Fallback to manual processing for this chunk - CORRECTED
                     for record in chunk:
-                        if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                        is_hse = record.get("Discipline") == "HSE"
+                        has_safety_keywords = is_safety_record(record["Description"])
+                        days_check = record.get("Days", 0) > 7 if report_type == "Closed" else record.get("Days_From_Today", 0) > 7
+                        
+                        if is_hse and has_safety_keywords and days_check:
                             site = record["Tower"]
                             if site not in result["Safety"]["Sites"]:
                                 result["Safety"]["Sites"][site] = {
@@ -1630,10 +1705,14 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                             result["Safety"]["Grand_Total"] += 1
                 except requests.exceptions.RequestException as e:
                     logger.error(f"RequestException for chunk {current_chunk}: {str(e)}")
-                    error_placeholder.error(f"Failed to connect to WatsonX API for chunk {current_chunk}: {str(e)}")
-                    # Fallback to manual processing
+                    st.warning(f"⚠️ Connection error for chunk {current_chunk}. Using fallback processing...")
+                    # Fallback to manual processing - CORRECTED
                     for record in chunk:
-                        if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                        is_hse = record.get("Discipline") == "HSE"
+                        has_safety_keywords = is_safety_record(record["Description"])
+                        days_check = record.get("Days", 0) > 7 if report_type == "Closed" else record.get("Days_From_Today", 0) > 7
+                        
+                        if is_hse and has_safety_keywords and days_check:
                             site = record["Tower"]
                             if site not in result["Safety"]["Sites"]:
                                 result["Safety"]["Sites"][site] = {
@@ -1650,11 +1729,15 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
                             result["Safety"]["Sites"][site]["Count"] += 1
                             result["Safety"]["Grand_Total"] += 1
 
-            # Validate WatsonX result against cleaned_data
+            # Validate WatsonX result against cleaned_data - CORRECTED
             if result["Safety"]["Grand_Total"] == 0 and cleaned_data:
                 logger.warning("WatsonX returned zero count despite valid records; using fallback counting")
                 for record in cleaned_data:
-                    if is_safety_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
+                    is_hse = record.get("Discipline") == "HSE"
+                    has_safety_keywords = is_safety_record(record["Description"])
+                    days_check = record.get("Days", 0) > 7 if report_type == "Closed" else record.get("Days_From_Today", 0) > 7
+                    
+                    if is_hse and has_safety_keywords and days_check:
                         site = record["Tower"]
                         if site not in result["Safety"]["Sites"]:
                             result["Safety"]["Sites"][site] = {
@@ -1675,14 +1758,38 @@ def generate_ncr_Safety_report_for_eligo(df, report_type, start_date=None, end_d
             status_placeholder.write(f"Processed {total_chunks}/{total_chunks} chunks (100%)")
             logger.debug(f"Final result before deduplication: {json.dumps(result, indent=2)}")
 
+            # Deduplication and fix data types for PyArrow compatibility
             for site in result["Safety"]["Sites"]:
-                result["Safety"]["Sites"][site]["Descriptions"] = list(set(result["Safety"]["Sites"][site]["Descriptions"]))
-                result["Safety"]["Sites"][site]["Created Date (WET)"] = list(set(result["Safety"]["Sites"][site]["Created Date (WET)"]))
-                result["Safety"]["Sites"][site]["Expected Close Date (WET)"] = list(set(result["Safety"]["Sites"][site]["Expected Close Date (WET)"]))
-                result["Safety"]["Sites"][site]["Status"] = list(set(result["Safety"]["Sites"][site]["Status"]))
+                # Ensure all values are strings and deduplicate
+                result["Safety"]["Sites"][site]["Descriptions"] = list(set(
+                    [str(desc) for desc in result["Safety"]["Sites"][site]["Descriptions"] if desc]
+                ))
+                result["Safety"]["Sites"][site]["Created Date (WET)"] = list(set(
+                    [str(date) for date in result["Safety"]["Sites"][site]["Created Date (WET)"] if date]
+                ))
+                result["Safety"]["Sites"][site]["Expected Close Date (WET)"] = list(set(
+                    [str(date) for date in result["Safety"]["Sites"][site]["Expected Close Date (WET)"] if date]
+                ))
+                result["Safety"]["Sites"][site]["Status"] = list(set(
+                    [str(status) for status in result["Safety"]["Sites"][site]["Status"] if status]
+                ))
+                # Update count to match actual unique items
+                result["Safety"]["Sites"][site]["Count"] = len(result["Safety"]["Sites"][site]["Descriptions"])
+            
+            # Recalculate grand total after deduplication
+            result["Safety"]["Grand_Total"] = sum(
+                site_data["Count"] for site_data in result["Safety"]["Sites"].values()
+            )
             
             logger.debug(f"Final result after deduplication: {json.dumps(result, indent=2)}")
+            
+            # Clear progress displays
+            progress_placeholder.empty()
+            status_placeholder.empty()
+            error_placeholder.empty()
+            
             return result, json.dumps(result)
+            
         except Exception as e:
             logger.error(f"Unexpected error in generate_ncr_Safety_report: {str(e)}")
             st.error(f"❌ Unexpected Error: {str(e)}")
@@ -2320,7 +2427,7 @@ def generate_consolidated_ncr_Housekeeping_excel_for_eligo(combined_result, repo
         output.seek(0)
         return output
 
-        
+@st.cache_data        
 def generate_combined_excel_report_for_eligo(all_reports, filename_prefix="All_Reports"):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -2744,163 +2851,118 @@ def generate_combined_excel_report_for_eligo(all_reports, filename_prefix="All_R
 
 @st.cache_data
 def generate_consolidated_ncr_Safety_excel(combined_result, report_title=None):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        workbook = writer.book
-        
-        title_format = workbook.add_format({
-            'bold': True, 'align': 'center', 'valign': 'vcenter', 'fg_color': 'yellow', 'border': 1, 'font_size': 12
-        })
-        header_format = workbook.add_format({
-            'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'text_wrap': True
-        })
-        cell_format = workbook.add_format({
-            'align': 'center', 'valign': 'vcenter', 'border': 1
-        })
-        site_format = workbook.add_format({
-            'align': 'left', 'valign': 'vcenter', 'border': 1
-        })
-        description_format = workbook.add_format({
-            'align': 'left', 'valign': 'vcenter', 'border': 1, 'text_wrap': True
-        })
-        
-        now = datetime.now()  # Current date: June 04, 2025
-        day = now.strftime("%d")
-        month_name = now.strftime("%B")
-        year = now.strftime("%Y")
-        date_part = f"{month_name} {day}, {year}"  # e.g., "June 04, 2025"
-        if report_title is None:
-            report_title = f"Safety: {date_part} - Current Month"
-        else:
-            report_type = "Safety"
-            report_title = f"{date_part}: {report_type}"
+    """Generate an Excel file for Safety NCR report."""
+    try:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            workbook = writer.book
 
-        def truncate_sheet_name(base_name, max_length=31):
-            if len(base_name) > max_length:
-                return base_name[:max_length - 3] + "..."
-            return base_name
+            # Define cell formats
+            title_format = workbook.add_format({
+                'bold': True, 'align': 'center', 'valign': 'vcenter', 'fg_color': 'yellow', 'border': 1, 'font_size': 12
+            })
+            header_format = workbook.add_format({
+                'bold': True, 'align': 'center', 'valign': 'vcenter', 'border': 1, 'text_wrap': True
+            })
+            cell_format = workbook.add_format({
+                'align': 'center', 'valign': 'vcenter', 'border': 1
+            })
+            site_format = workbook.add_format({
+                'align': 'left', 'valign': 'vcenter', 'border': 1
+            })
+            description_format = workbook.add_format({
+                'align': 'left', 'valign': 'vcenter', 'border': 1, 'text_wrap': True
+            })
 
-        summary_sheet_name = truncate_sheet_name(f'Safety NCR Report {date_part}')
-        details_sheet_name = truncate_sheet_name(f'Safety NCR Details {date_part}')
-
-        worksheet_summary = workbook.add_worksheet(summary_sheet_name)
-        worksheet_summary.set_column('A:A', 20)
-        worksheet_summary.set_column('B:B', 15)
-        
-        data = combined_result.get("Safety", {}).get("Sites", {})
-        
-        standard_sites = ["Tower F", "Tower G", "Tower H"]
-        
-        def normalize_site_name(site):
-            if site in standard_sites:
-                return site
-            match = re.search(r'(?:tower|t)[- ]?([fgh])', site, re.IGNORECASE)
-            if match:
-                letter = match.group(1).upper()
-                return f"Tower {letter}"
-            return None  # Skip non-matching sites
-
-        # Filter out sites that don't match the tower pattern
-        site_mapping = {}
-        for k in data.keys():
-            normalized = normalize_site_name(k)
-            if normalized:  # Only include if it matches a tower pattern
-                site_mapping[k] = normalized
-        
-        sorted_sites = sorted(standard_sites)
-        
-        worksheet_summary.merge_range('A1:B1', report_title, title_format)
-        row = 1
-        worksheet_summary.write(row, 0, 'Site', header_format)
-        worksheet_summary.write(row, 1, 'No. of Safety NCRs beyond 7 days', header_format)
-        
-        row = 2
-        for site in sorted_sites:
-            worksheet_summary.write(row, 0, site, site_format)
-            original_key = next((k for k, v in site_mapping.items() if v == site), None)
-            if original_key and original_key in data:
-                value = data[original_key].get("Count", 0)
+            # Generate report title with current date
+            now = datetime.now()
+            day = now.strftime("%d")
+            month_name = now.strftime("%B")
+            year = now.strftime("%Y")
+            date_part = f"{month_name} {day}, {year}"
+            if report_title is None:
+                report_title = f"Safety: {date_part} - Current Month"
             else:
-                value = 0
-            worksheet_summary.write(row, 1, value, cell_format)
-            row += 1
-        
-        worksheet_details = workbook.add_worksheet(details_sheet_name)
-        worksheet_details.set_column('A:A', 20)
-        worksheet_details.set_column('B:B', 60)
-        worksheet_details.set_column('C:D', 20)
-        worksheet_details.set_column('E:E', 15)
-        worksheet_details.set_column('F:G', 15)
+                report_title = f"{date_part}: Safety"
 
-        worksheet_details.merge_range('A1:G1', f"{report_title} - Details", title_format)
-        
-        headers = ['Site', 'Description', 'Created Date (WET)', 'Expected Close Date (WET)', 'Status', 'Discipline', 'Modules']
-        row = 1
-        for col, header in enumerate(headers):
-            worksheet_details.write(row, col, header, header_format)
-        
-        row = 2
-        for site in sorted_sites:
-            original_key = next((k for k, v in site_mapping.items() if v == site), None)
-            if original_key and original_key in data:
-                site_data = data[original_key]
-                descriptions = site_data.get("Descriptions", [])
-                created_dates = site_data.get("Created Date (WET)", [])
-                close_dates = site_data.get("Expected Close Date (WET)", [])
-                statuses = site_data.get("Status", [])
-                modules = site_data.get("Modules", [])
-                max_length = max(len(descriptions), len(created_dates), len(close_dates), len(statuses), len(modules))
-                for i in range(max_length):
-                    worksheet_details.write(row, 0, site, site_format)
-                    worksheet_details.write(row, 1, descriptions[i] if i < len(descriptions) else "", description_format)
-                    worksheet_details.write(row, 2, created_dates[i] if i < len(created_dates) else "", cell_format)
-                    worksheet_details.write(row, 3, close_dates[i] if i < len(close_dates) else "", cell_format)
-                    worksheet_details.write(row, 4, statuses[i] if i < len(statuses) else "", cell_format)
-                    worksheet_details.write(row, 5, "HSE", cell_format)
-                    worksheet_details.write(row, 6, ', '.join(modules[i]) if i < len(modules) and modules[i] else "", cell_format)
-                    row += 1
-        
+            # Truncate sheet names to fit Excel's 31-character limit
+            def truncate_sheet_name(base_name, max_length=31):
+                base_name = re.sub(r'[<>:"/\\|?*]', '_', base_name)
+                if len(base_name) > max_length:
+                    return base_name[:max_length - 3] + "..."
+                return base_name
+
+            summary_sheet_name = truncate_sheet_name(f'Safety NCR Report {date_part}')
+            details_sheet_name = truncate_sheet_name(f'Safety NCR Details {date_part}')
+
+            # Summary Worksheet
+            worksheet_summary = workbook.add_worksheet(summary_sheet_name)
+            worksheet_summary.set_column('A:A', 20)
+            worksheet_summary.set_column('B:B', 15)
+
+            data = combined_result.get("Safety", {}).get("Sites", {})
+            all_sites = list(data.keys())  # Use all available site keys from the data
+
+            # Write summary sheet
+            worksheet_summary.merge_range('A1:B1', report_title, title_format)
+            row = 1
+            worksheet_summary.write(row, 0, 'Site', header_format)
+            worksheet_summary.write(row, 1, 'No. of Safety NCRs beyond 7 days', header_format)
+
+            row = 2
+            for site in sorted(all_sites):  # Sort all sites from the data
+                worksheet_summary.write(row, 0, site, site_format)
+                value = data.get(site, {}).get("Count", 0)
+                worksheet_summary.write(row, 1, value, cell_format)
+                row += 1
+
+            # Details Worksheet
+            worksheet_details = workbook.add_worksheet(details_sheet_name)
+            worksheet_details.set_column('A:A', 20)
+            worksheet_details.set_column('B:B', 60)
+            worksheet_details.set_column('C:D', 20)
+            worksheet_details.set_column('E:E', 15)
+            worksheet_details.set_column('F:G', 15)
+
+            worksheet_details.merge_range('A1:G1', f"{report_title} - Details", title_format)
+
+            headers = ['Site', 'Description', 'Created Date (WET)', 'Expected Close Date (WET)', 'Status', 'Discipline', 'Modules']
+            row = 1
+            for col, header in enumerate(headers):
+                worksheet_details.write(row, col, header, header_format)
+
+            row = 2
+            for site in sorted(all_sites):
+                if site in data:
+                    site_data = data[site]
+                    descriptions = site_data.get("Descriptions", [])
+                    created_dates = site_data.get("Created Date (WET)", [])
+                    close_dates = site_data.get("Expected Close Date (WET)", [])
+                    statuses = site_data.get("Status", [])
+                    modules = site_data.get("Modules", [])  # Handle missing Modules
+                    max_length = max(len(lst) for lst in [descriptions, created_dates, close_dates, statuses, modules] if lst) or 1
+                    for i in range(max_length):
+                        worksheet_details.write(row, 0, site, site_format)
+                        worksheet_details.write(row, 1, descriptions[i] if i < len(descriptions) else "", description_format)
+                        worksheet_details.write(row, 2, created_dates[i] if i < len(created_dates) else "", cell_format)
+                        worksheet_details.write(row, 3, close_dates[i] if i < len(close_dates) else "", cell_format)
+                        worksheet_details.write(row, 4, statuses[i] if i < len(statuses) else "", cell_format)
+                        worksheet_details.write(row, 5, "HSE", cell_format)
+                        module_value = ', '.join(modules[i]) if i < len(modules) and isinstance(modules[i], list) else modules[i] if i < len(modules) else ""
+                        worksheet_details.write(row, 6, module_value, cell_format)
+                        row += 1
+
         output.seek(0)
-        return output
+        return output.getvalue()
 
-# Streamlit UI
+    except Exception as e:
+        st.error(f"❌ Error generating Excel: {str(e)}")
+        return None
+
 
 
 # Generate Combined NCR Report
 
-    if st.session_state["ncr_df"] is not None:
-        ncr_df = st.session_state["ncr_df"]
-        now = datetime.now()
-        day = now.strftime("%d")
-        year = now.strftime("%Y")
-        month_name = closed_end.strftime("%B")
-        report_title = f"NCR: {day}_{month_name}_{year}"
-        
-        closed_result, closed_raw = generate_ncr_report_for_eligo(ncr_df, "Closed", closed_start, closed_end)
-        open_result, open_raw = generate_ncr_report_for_eligo(ncr_df, "Open", Until_Date=open_end)
-
-        combined_result = {}
-        if "error" not in closed_result:
-            combined_result["NCR resolved beyond 21 days"] = closed_result["Closed"]
-        else:
-            combined_result["NCR resolved beyond 21 days"] = {"error": closed_result["error"]}
-        if "error" not in open_result:
-            combined_result["NCR open beyond 21 days"] = open_result["Open"]
-        else:
-            combined_result["NCR open beyond 21 days"] = {"error": open_result["error"]}
-
-        st.subheader("Combined NCR Report (JSON)")
-        st.dataframe(combined_result)
-        
-        excel_file = generate_consolidated_ncr_OpenClose_excel_for_eligo(combined_result, report_title)
-        st.download_button(
-            label="📥 Download Excel Report",
-            data=excel_file,
-            file_name=f"NCR_Report_{day}_{month_name}_{year}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.error("Please fetch data first!")
 
 # Helper function to generate report title
 def generate_report_title(prefix):
@@ -2916,7 +2978,6 @@ def generate_report_title(prefix):
 # Generate Housekeeping NCR Report
 
 # All Reports Button
-
 
 
 
