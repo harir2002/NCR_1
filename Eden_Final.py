@@ -410,32 +410,41 @@ def generate_ncr_report_for_eden(df: pd.DataFrame, report_type: str, start_date=
                         )
                         flat_no_pattern = re.search(r"flat\s*no", description, re.IGNORECASE)
                         
+                        # --- Corrected Code ---
+# ...
                         if multiple_tower_pattern:
-                            # FIXED: Create a single record that represents both towers instead of duplicating
+                            # Handles cases like "Tower 4 and Tower 5"
                             tower1 = multiple_tower_pattern.group(2).zfill(2)
                             tower2 = multiple_tower_pattern.group(5).zfill(2)
-                            
-                            # Option 1: Create a combined tower name
                             cleaned_record["Tower"] = f"Eden-Tower-{tower1}-{tower2}-CommonArea"
                             cleaned_data.append(cleaned_record)
                             logger.debug(f"Added combined tower record for Eden-Tower-{tower1}-{tower2}-CommonArea: {description}")
-                            
-                            
-                            
+                        
+                        elif "common area" in description:
+                            # PRIORITIZES "common area" keyword, even if a tower is mentioned
+                            cleaned_record["Tower"] = "Common_Area"
+                            cleaned_data.append(cleaned_record)
+                            logger.debug(f"Assigned Common_Area due to keyword: {description}")
+                        
                         elif flat_no_pattern and tower_matches:
+                            # Handles cases like "flat no in tower 4"
                             tower_num = tower_matches[0][1].zfill(2)
                             cleaned_record["Tower"] = f"Eden-Tower-{tower_num}"
                             cleaned_data.append(cleaned_record)
                             logger.debug(f"Assigned Eden-Tower-{tower_num} for Flat no description: {description}")
-                        elif "common area" in description or not tower_matches:
-                            cleaned_record["Tower"] = "Common_Area"
-                            cleaned_data.append(cleaned_record)
-                            logger.debug(f"Assigned Common_Area: {description}")
-                        else:
+
+                        elif tower_matches:
+                            # Catches descriptions that only mention a tower number
                             tower_num = tower_matches[0][1].zfill(2)
                             cleaned_record["Tower"] = f"Eden-Tower-{tower_num}"
                             logger.debug(f"Single tower match: Eden-Tower-{tower_num}")
                             cleaned_data.append(cleaned_record)
+                            
+                        else:
+                            # Default for descriptions with no tower mentioned
+                            cleaned_record["Tower"] = "Common_Area"
+                            cleaned_data.append(cleaned_record)
+                            logger.debug(f"Assigned Common_Area as default: {description}")
                             
                 except Exception as e:
                     logger.error(f"Error processing record: {record}, error: {str(e)}")
@@ -704,43 +713,40 @@ def process_chunk_locally(chunk, all_results, report_type):
 # Generate NCR Housekeeping Report
 
 @st.cache_data
-
 def generate_ncr_Housekeeping_report_for_eden(df, report_type, start_date=None, end_date=None, until_date=None):
     """Generate Housekeeping NCR report for Open or Closed records."""
-    with st.spinner(f"Generating {report_type} Housekeeping NCR Report with WatsonX..."):
+    with st.spinner(f"Generating {report_type} Housekeeping NCR Report..."):
         try:
             today = pd.to_datetime(datetime.today().strftime('%Y/%m/%d'))
             closed_start = pd.to_datetime(start_date) if start_date else None
             closed_end = pd.to_datetime(end_date) if end_date else None
             open_until = pd.to_datetime(until_date) if until_date else None
-
-            # Define housekeeping keywords
+            
+            # (Your housekeeping_keywords and is_housekeeping_record function remain the same)
             housekeeping_keywords = [
                 'housekeeping', 'cleaning', 'cleanliness', 'waste disposal', 'waste management', 'garbage', 'trash',
-                'rubbish', 'debris', 'litter', 'dust', 'untidy', 'cluttered', 'accumulation of waste',
-                'construction waste', 'pile of garbage', 'poor housekeeping', 'material storage',
-                'construction debris', 'cleaning schedule', 'garbage collection', 'waste bins', 'dirty',
-                'mess', 'unclean', 'disorderly', 'dirty floor', 'waste disposal area', 'waste collection',
-                'cleaning protocol', 'sanitation', 'trash removal', 'waste accumulation', 'unkept area',
-                'refuse collection', 'workplace cleanliness'
+                'rubbish', 'debris', 'litter', 'dust', 'untidy', 'cluttered', 'accumulation of waste', 'construction waste',
+                'pile of garbage', 'poor housekeeping', 'material storage', 'construction debris', 'cleaning schedule',
+                'garbage collection', 'waste bins', 'dirty', 'mess', 'unclean', 'disorderly', 'dirty floor',
+                'waste disposal area', 'waste collection', 'cleaning protocol', 'sanitation', 'trash removal',
+                'waste accumulation', 'unkept area', 'refuse collection', 'workplace cleanliness'
             ]
-
+            safety_keywords = ['safety precautions', 'PPE', 'fall protection', 'safety belts', 'barricades']
             def is_housekeeping_record(description):
-                # Handle None or non-string descriptions
-                if description is None or not isinstance(description, str):
-                    logger.debug(f"Invalid description encountered: {description}")
-                    return False
-                description_lower = description.lower()
-                return any(keyword in description_lower for keyword in housekeeping_keywords)
+                if pd.isna(description): return False
+                try:
+                    description_lower = str(description).strip().lower()
+                    if not description_lower: return False
+                    has_housekeeping = any(keyword in description_lower for keyword in housekeeping_keywords)
+                    has_safety = any(keyword in description_lower for keyword in safety_keywords)
+                    return has_housekeeping and not has_safety
+                except Exception: return False
 
             # Filter data
             if report_type == "Closed":
                 filtered_df = df[
-                    (df['Discipline'] == 'HSE') &
-                    (df['Status'] == 'Closed') &
-                    (df['Days'].notnull()) &
-                    (df['Days'] > 7) &
-                    (df['Description'].apply(is_housekeeping_record))
+                    (df['Discipline'] == 'HSE') & (df['Status'] == 'Closed') & (df['Days'].notna()) & (df['Days'] > 7) &
+                    (df['Description'].notna()) & (df['Description'].apply(is_housekeeping_record))
                 ].copy()
                 if closed_start and closed_end:
                     filtered_df = filtered_df[
@@ -749,14 +755,13 @@ def generate_ncr_Housekeeping_report_for_eden(df, report_type, start_date=None, 
                     ].copy()
             else:  # Open
                 filtered_df = df[
-                    (df['Discipline'] == 'HSE') &
-                    (df['Status'] == 'Open') &
-                    (pd.to_datetime(df['Created Date (WET)']).notna()) &
-                    (df['Description'].apply(is_housekeeping_record))
+                    (df['Discipline'] == 'HSE') & (df['Status'] == 'Open') & (pd.to_datetime(df['Created Date (WET)']).notna()) &
+                    (df['Description'].notna()) & (df['Description'].apply(is_housekeeping_record))
                 ].copy()
-                filtered_df.loc[:, 'Days_From_Today'] = (today - pd.to_datetime(filtered_df['Created Date (WET)'])).dt.days
-                filtered_df = filtered_df[filtered_df['Days_From_Today'] > 7].copy()
-                if open_until:
+                if not filtered_df.empty:
+                    filtered_df.loc[:, 'Days_From_Today'] = (today - pd.to_datetime(filtered_df['Created Date (WET)'])).dt.days
+                    filtered_df = filtered_df[filtered_df['Days_From_Today'] > 7].copy()
+                if open_until and not filtered_df.empty:
                     filtered_df = filtered_df[
                         (pd.to_datetime(filtered_df['Created Date (WET)']) <= open_until)
                     ].copy()
@@ -764,315 +769,76 @@ def generate_ncr_Housekeeping_report_for_eden(df, report_type, start_date=None, 
             if filtered_df.empty:
                 return {"Housekeeping": {"Sites": {}, "Grand_Total": 0}}, ""
 
-            filtered_df.loc[:, 'Created Date (WET)'] = filtered_df['Created Date (WET)'].astype(str)
-            filtered_df.loc[:, 'Expected Close Date (WET)'] = filtered_df['Expected Close Date (WET)'].astype(str)
+            # *** FIX: Convert date columns to string before processing ***
+            filtered_df.loc[:, 'Created Date (WET)'] = pd.to_datetime(filtered_df['Created Date (WET)']).dt.strftime('%Y-%m-%d')
+            filtered_df.loc[:, 'Expected Close Date (WET)'] = pd.to_datetime(filtered_df['Expected Close Date (WET)'], errors='coerce').dt.strftime('%Y-%m-%d')
 
             processed_data = filtered_df.to_dict(orient="records")
-            
-            cleaned_data = []
-            seen_descriptions = set()
+            st.write(f"Data prepared for {report_type} report generation:", processed_data)
+
+            # --- Simplified Local Processing Logic ---
+            result = {"Housekeeping": {"Sites": {}, "Grand_Total": 0}}
+            def normalize_site_name(description):
+                desc_lower = description.lower() if isinstance(description, str) else ""
+                tower_match = re.search(r"(?:tower|t)\s*-?\s*(\d+)", desc_lower, re.IGNORECASE)
+                if tower_match: return f"Eden-Tower {tower_match.group(1).zfill(2)}"
+                return "Common_Area"
+
             for record in processed_data:
                 description = str(record.get("Description", "")).strip()
-                if description and description not in seen_descriptions:
-                    seen_descriptions.add(description)
-                    cleaned_record = {
-                        "Description": description,
-                        "Created Date (WET)": str(record.get("Created Date (WET)", "")),
-                        "Expected Close Date (WET)": str(record.get("Expected Close Date (WET)", "")),
-                        "Status": str(record.get("Status", "")),
-                        "Days": record.get("Days", 0),
-                        "Discipline": "HSE",
-                        "Tower": "External Development"
-                    }
-                    if report_type == "Open":
-                        cleaned_record["Days_From_Today"] = record.get("Days_From_Today", 0)
+                if not description: continue
+                site = normalize_site_name(description)
+                if site not in result["Housekeeping"]["Sites"]:
+                    result["Housekeeping"]["Sites"][site] = {"Count": 0, "Descriptions": [], "Created Date (WET)": [], "Expected Close Date (WET)": [], "Status": []}
+                result["Housekeeping"]["Sites"][site]["Descriptions"].append(description)
+                result["Housekeeping"]["Sites"][site]["Created Date (WET)"].append(record.get("Created Date (WET)", ""))
+                result["Housekeeping"]["Sites"][site]["Expected Close Date (WET)"].append(record.get("Expected Close Date (WET)", ""))
+                result["Housekeeping"]["Sites"][site]["Status"].append(record.get("Status", ""))
+                result["Housekeeping"]["Sites"][site]["Count"] += 1
+                result["Housekeeping"]["Grand_Total"] += 1
 
-                    desc_lower = description.lower()
-                    tower_match = re.search(r"(tower|t)\s*-?\s*(\d+|2021|28)", desc_lower, re.IGNORECASE)
-                    cleaned_record["Tower"] = f"Eden-Tower{tower_match.group(2).zfill(2)}" if tower_match else "Common_Area"
-                    logger.debug(f"Tower set to {cleaned_record['Tower']}")
-
-                    cleaned_data.append(cleaned_record)
-
-            st.write(f"Total {report_type} records to process: {len(cleaned_data)}")
-            logger.debug(f"Processed data: {json.dumps(cleaned_data, indent=2)}")
-
-            if not cleaned_data:
-                return {"Housekeeping": {"Sites": {}, "Grand_Total": 0}}, ""
-
-            access_token = get_access_token(API_KEY)
-            if not access_token:
-                return {"error": "Failed to obtain access token"}, ""
-
-            result = {"Housekeeping": {"Sites": {}, "Grand_Total": 0}}
-            chunk_size = 10
-            total_chunks = (len(cleaned_data) + chunk_size - 1) // chunk_size
-
-            session = requests.Session()
-            retry_strategy = Retry(
-                total=3,
-                backoff_factor=2,
-                status_forcelist=[500, 502, 503, 504, 429, 408],
-                allowed_methods=["POST"],
-                raise_on_redirect=True,
-                raise_on_status=True
-            )
-            adapter = HTTPAdapter(max_retries=retry_strategy)
-            session.mount("https://", adapter)
-
-            progress_placeholder = st.empty()
-            status_placeholder = st.empty()
-            error_placeholder = st.empty()
-            progress_bar = progress_placeholder.progress(0)
-
-            for i in range(0, len(cleaned_data), chunk_size):
-                chunk = cleaned_data[i:i + chunk_size]
-                current_chunk = i // chunk_size + 1
-                progress = min((current_chunk / total_chunks) * 100, 100)
-                progress_bar.progress(int(progress))
-                status_placeholder.write(f"Processed {current_chunk}/{total_chunks} chunks ({int(progress)}%)")
-                logger.debug(f"Chunk data: {json.dumps(chunk, indent=2)}")
-
-                prompt = (
-                    "Return a single valid JSON object with the exact fields specified below. Do not generate code, explanations, multiple responses, or wrap the JSON in code blocks. Process the provided data and return only the JSON object.\n\n"
-                    "Task: Count Housekeeping NCRs by site ('Tower' field) where 'Discipline' is 'HSE' and 'Days' > 7 or 'Days_From_Today' > 7 for open records. The 'Description' must contain any of these housekeeping keywords (case-insensitive): "
-                    "'housekeeping', 'cleaning', 'cleanliness', 'waste disposal', 'waste management', 'garbage', 'trash', 'rubbish', 'debris', 'litter', 'dust', 'untidy', 'cluttered', "
-                    "'accumulation of waste', 'construction waste', 'pile of garbage', 'poor housekeeping', 'material storage', 'construction debris', 'cleaning schedule', 'garbage collection', "
-                    "'waste bins', 'dirty', 'mess', 'unclean', 'disorderly', 'dirty floor', 'waste disposal area', 'waste collection', 'cleaning protocol', 'sanitation', 'trash removal', "
-                    "'waste accumulation', 'unkept area', 'refuse collection', 'workplace cleanliness'. "
-                    "Use 'Tower' values as they appear (e.g., 'Eden-Tower01', 'Common_Area'). Collect 'Description', 'Created Date (WET)', 'Expected Close Date (WET)', and 'Status' into arrays for each site. "
-                    "Assign the count to 'Count' (No. of Housekeeping NCRs beyond 7 days). If no matches, set count to 0 for each site in the data. Return all sites present in the data.\n\n"
-                    "Output Format:\n"
-                    "{\n"
-                    '  "Housekeeping": {\n'
-                    '    "Sites": {\n'
-                    '      "Site_Name": {\n'
-                    '        "Descriptions": [],\n'
-                    '        "Created Date (WET)": [],\n'
-                    '        "Expected Close Date (WET)": [],\n'
-                    '        "Status": [],\n'
-                    '        "Count": 0\n'
-                    '      }\n'
-                    '    },\n'
-                    '    "Grand_Total": 0\n'
-                    '  }\n'
-                    '}\n\n'
-                    f"Data: {json.dumps(chunk)}\n"
-                )
-
-                payload = {
-                    "input": prompt,
-                    "parameters": {
-                        "decoding_method": "greedy",
-                        "max_new_tokens": 500,
-                        "min_new_tokens": 0,
-                        "temperature": 0.001,
-                        "n": 1
-                    },
-                    "model_id": MODEL_ID,
-                    "project_id": PROJECT_ID
-                }
-                headers = {
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {access_token}"
-                }
-
-                try:
-                    logger.debug("Initiating WatsonX API call...")
-                    response = session.post(WATSONX_API_URL, headers=headers, json=payload, verify=certifi.where(), timeout=30)
-                    logger.info(f"WatsonX API response status: {response.status_code}")
-
-                    if response.status_code == 200:
-                        api_result = response.json()
-                        generated_text = api_result.get("results", [{}])[0].get("generated_text", "").strip()
-                        logger.debug(f"Generated text for chunk {current_chunk}: {generated_text}")
-
-                        json_str = None
-                        brace_count = 0
-                        start_idx = None
-                        for idx, char in enumerate(generated_text):
-                            if char == '{':
-                                if brace_count == 0:
-                                    start_idx = idx
-                                brace_count += 1
-                            elif char == '}':
-                                brace_count -= 1
-                                if brace_count == 0 and start_idx is not None:
-                                    json_str = generated_text[start_idx:idx + 1]
-                                    break
-
-                        if json_str:
-                            try:
-                                logger.debug(f"Extracted JSON string: {json_str}")
-                                parsed_json = json.loads(json_str)
-                                chunk_result = parsed_json.get("Housekeeping", {})
-                                chunk_sites = chunk_result.get("Sites", {})
-                                chunk_grand_total = chunk_result.get("Grand_Total", 0)
-
-                                for site, values in chunk_sites.items():
-                                    if not isinstance(values, dict):
-                                        logger.warning(f"Invalid site data for {site}: {values}")
-                                        continue
-                                    if site not in result["Housekeeping"]["Sites"]:
-                                        result["Housekeeping"]["Sites"][site] = {
-                                            "Count": 0,
-                                            "Descriptions": [],
-                                            "Created Date (WET)": [],
-                                            "Expected Close Date (WET)": [],
-                                            "Status": []
-                                        }
-                                    result["Housekeeping"]["Sites"][site]["Descriptions"].extend(values.get("Descriptions", []))
-                                    result["Housekeeping"]["Sites"][site]["Created Date (WET)"].extend(values.get("Created Date (WET)", []))
-                                    result["Housekeeping"]["Sites"][site]["Expected Close Date (WET)"].extend(values.get("Expected Close Date (WET)", []))
-                                    result["Housekeeping"]["Sites"][site]["Status"].extend(values.get("Status", []))
-                                    result["Housekeeping"]["Sites"][site]["Count"] += values.get("Count", 0)
-                                result["Housekeeping"]["Grand_Total"] += chunk_grand_total
-                                logger.debug(f"Successfully processed chunk {current_chunk}/{total_chunks}")
-                            except json.JSONDecodeError as e:
-                                logger.error(f"JSONDecodeError for chunk {current_chunk}: {str(e)}")
-                                error_placeholder.error(f"Failed to parse JSON for chunk {current_chunk}: {str(e)}")
-                                for record in chunk:
-                                    if is_housekeeping_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
-                                        site = record["Tower"]
-                                        if site not in result["Housekeeping"]["Sites"]:
-                                            result["Housekeeping"]["Sites"][site] = {
-                                                "Count": 0,
-                                                "Descriptions": [],
-                                                "Created Date (WET)": [],
-                                                "Expected Close Date (WET)": [],
-                                                "Status": []
-                                            }
-                                        result["Housekeeping"]["Sites"][site]["Descriptions"].append(record["Description"])
-                                        result["Housekeeping"]["Sites"][site]["Created Date (WET)"].append(record["Created Date (WET)"])
-                                        result["Housekeeping"]["Sites"][site]["Expected Close Date (WET)"].append(record["Expected Close Date (WET)"])
-                                        result["Housekeeping"]["Sites"][site]["Status"].append(record["Status"])
-                                        result["Housekeeping"]["Sites"][site]["Count"] += 1
-                                        result["Housekeeping"]["Grand_Total"] += 1
-                        else:
-                            logger.error(f"No valid JSON for chunk {current_chunk}: {generated_text}")
-                            error_placeholder.error(f"No valid JSON for chunk {current_chunk}")
-                            for record in chunk:
-                                if is_housekeeping_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
-                                    site = record["Tower"]
-                                    if site not in result["Housekeeping"]["Sites"]:
-                                        result["Housekeeping"]["Sites"][site] = {
-                                            "Count": 0,
-                                            "Descriptions": [],
-                                            "Created Date (WET)": [],
-                                            "Expected Close Date (WET)": [],
-                                            "Status": []
-                                        }
-                                    result["Housekeeping"]["Sites"][site]["Descriptions"].append(record["Description"])
-                                    result["Housekeeping"]["Sites"][site]["Created Date (WET)"].append(record["Created Date (WET)"])
-                                    result["Housekeeping"]["Sites"][site]["Expected Close Date (WET)"].append(record["Expected Close Date (WET)"])
-                                    result["Housekeeping"]["Sites"][site]["Status"].append(record["Status"])
-                                    result["Housekeeping"]["Sites"][site]["Count"] += 1
-                                    result["Housekeeping"]["Grand_Total"] += 1
-                    else:
-                        logger.error(f"WatsonX API error for chunk {current_chunk}: {response.status_code} - {response.text}")
-                        error_placeholder.error(f"WatsonX API error for chunk {current_chunk}: {response.status_code}")
-                        for record in chunk:
-                            if is_housekeeping_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
-                                site = record["Tower"]
-                                if site not in result["Housekeeping"]["Sites"]:
-                                    result["Housekeeping"]["Sites"][site] = {
-                                        "Count": 0,
-                                        "Descriptions": [],
-                                        "Created Date (WET)": [],
-                                        "Expected Close Date (WET)": [],
-                                        "Status": []
-                                    }
-                                result["Housekeeping"]["Sites"][site]["Descriptions"].append(record["Description"])
-                                result["Housekeeping"]["Sites"][site]["Created Date (WET)"].append(record["Created Date (WET)"])
-                                result["Housekeeping"]["Sites"][site]["Expected Close Date (WET)"].append(record["Expected Close Date (WET)"])
-                                result["Housekeeping"]["Sites"][site]["Status"].append(record["Status"])
-                                result["Housekeeping"]["Sites"][site]["Count"] += 1
-                                result["Housekeeping"]["Grand_Total"] += 1
-                except requests.exceptions.ReadTimeout as e:
-                    logger.error(f"ReadTimeoutError for chunk {current_chunk}: {str(e)}")
-                    error_placeholder.error(f"Failed to connect to WatsonX API for chunk {current_chunk}: {str(e)}")
-                    for record in chunk:
-                        if is_housekeeping_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
-                            site = record["Tower"]
-                            if site not in result["Housekeeping"]["Sites"]:
-                                result["Housekeeping"]["Sites"][site] = {
-                                    "Count": 0,
-                                    "Descriptions": [],
-                                    "Created Date (WET)": [],
-                                    "Expected Close Date (WET)": [],
-                                    "Status": []
-                                }
-                            result["Housekeeping"]["Sites"][site]["Descriptions"].append(record["Description"])
-                            result["Housekeeping"]["Sites"][site]["Created Date (WET)"].append(record["Created Date (WET)"])
-                            result["Housekeeping"]["Sites"][site]["Expected Close Date (WET)"].append(record["Expected Close Date (WET)"])
-                            result["Housekeeping"]["Sites"][site]["Status"].append(record["Status"])
-                            result["Housekeeping"]["Sites"][site]["Count"] += 1
-                            result["Housekeeping"]["Grand_Total"] += 1
-                except requests.exceptions.RequestException as e:
-                    logger.error(f"RequestException for chunk {current_chunk}: {str(e)}")
-                    error_placeholder.error(f"Failed to connect to WatsonX API for chunk {current_chunk}: {str(e)}")
-                    for record in chunk:
-                        if is_housekeeping_record(record["Description"]) and (record.get("Days", 0) > 7 or record.get("Days_From_Today", 0) > 7) and record.get("Discipline") == "HSE":
-                            site = record["Tower"]
-                            if site not in result["Housekeeping"]["Sites"]:
-                                result["Housekeeping"]["Sites"][site] = {
-                                    "Count": 0,
-                                    "Descriptions": [],
-                                    "Created Date (WET)": [],
-                                    "Expected Close Date (WET)": [],
-                                    "Status": []
-                                }
-                            result["Housekeeping"]["Sites"][site]["Descriptions"].append(record["Description"])
-                            result["Housekeeping"]["Sites"][site]["Created Date (WET)"].append(record["Created Date (WET)"])
-                            result["Housekeeping"]["Sites"][site]["Expected Close Date (WET)"].append(record["Expected Close Date (WET)"])
-                            result["Housekeeping"]["Sites"][site]["Status"].append(record["Status"])
-                            result["Housekeeping"]["Sites"][site]["Count"] += 1
-                            result["Housekeeping"]["Grand_Total"] += 1
-
-            progress_bar.progress(100)
-            status_placeholder.write(f"Processed {total_chunks}/{total_chunks} chunks (100%)")
-            logger.debug(f"Final result before deduplication: {json.dumps(result, indent=2)}")
-
-            for site in result["Housekeeping"]["Sites"]:
-                result["Housekeeping"]["Sites"][site]["Descriptions"] = list(set(result["Housekeeping"]["Sites"][site]["Descriptions"]))
-                result["Housekeeping"]["Sites"][site]["Created Date (WET)"] = list(set(result["Housekeeping"]["Sites"][site]["Created Date (WET)"]))
-                result["Housekeeping"]["Sites"][site]["Expected Close Date (WET)"] = list(set(result["Housekeeping"]["Sites"][site]["Expected Close Date (WET)"]))
-                result["Housekeeping"]["Sites"][site]["Status"] = list(set(result["Housekeeping"]["Sites"][site]["Status"]))
-            
-            logger.debug(f"Final result after deduplication: {json.dumps(result, indent=2)}")
+            logger.info(f"Successfully processed {result['Housekeeping']['Grand_Total']} records locally for {report_type} Housekeeping Report.")
             return result, json.dumps(result)
+
         except Exception as e:
             logger.error(f"Unexpected error in generate_ncr_Housekeeping_report: {str(e)}")
             st.error(f"❌ Unexpected Error: {str(e)}")
             return {"error": f"Unexpected Error: {str(e)}"}, ""
 
+
 def clean_and_parse_json(generated_text):
-    # Remove code block markers if present
-    cleaned_text = re.sub(r'```json|```python|```', '', generated_text).strip()
-    
-    # First attempt: Try to parse the text directly as JSON
+    """Enhanced JSON parsing with better error handling."""
     try:
-        for line in cleaned_text.split('\n'):
-            line = line.strip()
-            if line.startswith('{') and line.endswith('}'):
-                return json.loads(line)
-        return json.loads(cleaned_text)
-    except json.JSONDecodeError as e:
-        logger.warning(f"Initial JSONDecodeError: {str(e)} - Cleaned response: {cleaned_text}")
-    
-    # Second attempt: If the response contains Python code with a print(json.dumps(...)),
-    # extract the JSON from the output
-    json_match = re.search(r'print$$ json\.dumps\((.*?),\s*indent=2 $$\)', cleaned_text, re.DOTALL)
-    if json_match:
-        json_str = json_match.group(1).strip()
+        # Remove code block markers if present
+        cleaned_text = re.sub(r'```python|```', '', generated_text)
+        
+        # First attempt: Try to parse the text directly as JSON
         try:
-            return eval(json_str)  # Safely evaluate the JSON string as a Python dict
-        except Exception as e:
-            logger.error(f"Failed to evaluate extracted JSON: {str(e)} - Extracted JSON: {json_str}")
-    
-    logger.error(f"JSONDecodeError: Unable to parse response - Cleaned response: {cleaned_text}")
-    return None
+            for line in cleaned_text.split('\n'):
+                line = line.strip()
+                if line.startswith('{') and line.endswith('}'):
+                    return json.loads(line)
+            return json.loads(cleaned_text)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Initial JSONDecodeError: {str(e)} - Cleaned response: {cleaned_text}")
+        
+        # Second attempt: If the response contains Python code with a print(json.dumps(...)),
+        # extract the JSON from the output
+        json_match = re.search(r'print\s*$$\s*json\.dumps$$(.*?),\s*indent=2\s*$$\s*$$', cleaned_text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1).strip()
+            try:
+                return eval(json_str)  # Safely evaluate the JSON string as a Python dict
+            except Exception as e:
+                logger.error(f"Failed to evaluate extracted JSON: {str(e)} - Extracted JSON: {json_str}")
+        
+        logger.error(f"JSONDecodeError: Unable to parse response - Cleaned response: {cleaned_text}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error in clean_and_parse_json: {str(e)} - Generated text: {generated_text}")
+        return None
+
 
 @st.cache_data
 def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_date=None, until_date=None, debug_bypass_api=False):
@@ -1086,20 +852,31 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
 
             # Define safety keywords
             safety_keywords = [
-                'safety precautions', 'temporary electricity', 'on-site labor is working without wearing safety belt',
-                'safety norms', 'Missing Cabin Glass – Tower Crane', 'Crane Operator cabin front glass',
-                'site on priority basis lifeline is not fixed at the working place',
-                'operated only after Third Party Inspection and certification crane operated without TPIC',
-                'safety precautions are not taken seriously at site Tower crane operator cabin front glass is missing while crane operator is working inside cabin',
-                'no barrier around', 'Lock and Key arrangement to restrict unauthorized operations, buzzer while operation, gates at landing platforms, catch net in the vicinity',
-                'safety precautions are not taken seriously', 'firecase', 'Health and Safety Plan',
-                'noticed that submission of statistics report is regularly delayed',
-                'crane operator cabin front glass is missing while crane operator is working inside cabin',
-                'labor is working without wearing safety belt', 'barricading', 'tank', 'safety shoes',
-                'safety belt', 'helmet', 'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard',
-                'unsafe platform', 'catch net', 'edge protection', 'TPI', 'scaffold', 'lifting equipment',
-                'dust suppression', 'debris chute', 'spill control', 'crane operator', 'halogen lamps',
-                'fall catch net', 'environmental contamination', 'fire hazard',' continuous down slope movement of soil','continuous collapse of soil leading '
+                # --- Personal Protective Equipment (PPE) ---
+                'ppe', 'helmet', 'safety shoes', 'safety belt', 'harness', 'without ppe',
+                'no helmet', 'no shoes', 'no safety belt',
+                # --- Working at Height ---
+                'fall protection', 'lifeline', 'guard rail', 'unprotected edge',
+                'working at height', 'fall catch net', 'catch net', 'scaffold', 'ladder',
+                # --- Barricading & Access ---
+                'barricade', 'barricading', 'no barrier', 'unauthorized operation', 'gate',
+                # --- Electrical ---
+                'electrical hazard', 'exposed wire', 'electric shock', 'temporary electricity',
+                'halogen lamp',
+                # --- Excavation & Soil ---
+                'excavation', 'collapse of soil', 'down slope movement',
+                # --- Equipment & Lifting ---
+                'crane', 'lifting', 'rigging', 'tpi', 'third party inspection', 'tpic',
+                'crane operator', 'cabin glass',
+                # --- Fire & Hazardous Materials ---
+                'fire extinguisher', 'fire hazard', 'firecase', 'spill', 'leak',
+                'hazardous material', 'environmental contamination', 'debris chute', 'dust suppression',
+                # --- General Safety Violations ---
+                'unsafe act', 'unsafe condition', 'violation of hse', 'hse norms',
+                'safety norms', 'safety precaution', 'unsafe platform', 'negligence in supervision',
+                'health and safety plan',
+                # --- Keywords from user examples ---
+                'labour is working at height', 'tank','NAT'
             ]
 
             def is_safety_record(description):
@@ -1142,14 +919,14 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                 st.write("Null check for critical columns:")
                 st.write(df[['Days', 'Description', 'Created Date (WET)', 'Expected Close Date (WET)']].isnull().sum())
 
+                # --- Corrected Code ---
                 filtered_df = df[
                     (
-                        (df['Discipline'] == 'HSE') |
+                        (df['Discipline'] == 'HSE') &  # <-- Changed to AND
                         (df['Description'].apply(is_safety_record))
                     ) &
-                    (df['Status'] == 'Closed') &
-                    (df['Days'].notnull()) &
-                    (df['Days'] > 7)
+                    (df['Status'] == 'Open') &
+                    (pd.to_datetime(df['Created Date (WET)']).notna())
                 ].copy()
                 
                 # Apply date filtering only if dates are provided
@@ -1303,8 +1080,8 @@ def generate_ncr_Safety_report_for_eden(df, report_type, start_date=None, end_da
                     "'safety precautions are not taken seriously at site Tower crane operator cabin front glass is missing while crane operator is working inside cabin', "
                     "'no barrier around', 'Lock and Key arrangement to restrict unauthorized operations, buzzer while operation, gates at landing platforms, catch net in the vicinity', "
                     "'safety precautions are not taken seriously', 'firecase', 'Health and Safety Plan', 'noticed that submission of statistics report is regularly delayed', "
-                    "'crane operator cabin front glass is missing while crane operator is working inside cabin', 'labor is working without wearing safety belt', 'barricading', 'tank', 'safety shoes', "
-                    "'safety belt', 'helmet', 'lifeline', 'guard rails', 'fall protection', 'PPE', 'electrical hazard', 'unsafe platform', 'catch net', 'edge protection', 'TPI', 'scaffold', "
+                    "'crane operator cabin front glass is missing while crane operator is working inside cabin','Tower 7, We have found that the labour is working at height without wearing safety belt and safety shoes leading to violation of HSE norms due to negligence in supervision.', 'labor is working without wearing safety belt', 'barricading', 'tank', 'safety shoes', "
+                    "'safety belt', 'helmet', 'lifeline', 'guard rails', 'fall protection', 'PPE','Violations of HSE','electrical hazard', 'unsafe platform', 'catch net', 'edge protection', 'TPI', 'scaffold', "
                     "'lifting equipment', 'dust suppression', 'debris chute', 'spill control', 'crane operator', 'halogen lamps', 'fall catch net', 'environmental contamination', 'fire hazard','continuous collapse of soil leading to instability','continuous down slope movement of soil'.\n\n"
                     "Group by 'Tower' (e.g., 'Eden-Tower 06', 'Common_Area'). Include all input sites, even with count 0. Collect 'Description', 'Created Date (WET)', 'Expected Close Date (WET)', 'Status' in arrays. Set 'Count' to the number of matching NCRs.\n\n"
                     "Output Format:\n"
@@ -1536,11 +1313,11 @@ def generate_consolidated_ncr_Housekeeping_excel_for_eden(combined_result, repor
         })
         
         report_type = "Closed" if "Closed" in report_title else "Open"
-        now = datetime.now()
+        now = datetime.now()  # April 25, 2025
         day = now.strftime("%d")
         month_name = now.strftime("%B")
         year = now.strftime("%Y")
-        date_part = f"{day}_{month_name}_{year}"
+        date_part = f"{day}_{month_name}_{year}"  # e.g., "25_April_2025"
         report_title = f"Housekeeping: {report_type} - {date_part}"
 
         def truncate_sheet_name(base_name, max_length=31):
@@ -1748,7 +1525,6 @@ def generate_consolidated_ncr_Safety_excel_for_eden(combined_result, report_titl
         return output
  
 
-
 @st.cache_data
 def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_title="NCR"):
     output = io.BytesIO()
@@ -1846,7 +1622,7 @@ def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_t
                     return f"Tower {int(tower_num1)}"
             
             # Handle general CommonArea variations
-            if "CommonArea" in site or "Common Area" in site:
+            if "CommonArea" in site or "Common Area" in site or "ED" in site:
                 return "Common_Area"
             
             # Handle Eden-Tower-XX format
@@ -1939,7 +1715,7 @@ def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_t
         
         row = 3
         site_totals = {}
-        
+    
         for site in standard_sites:
             formats = tower_formats.get(site, {})
             tower_total_format = formats.get('tower_total', workbook.add_format({
@@ -1954,24 +1730,27 @@ def generate_consolidated_ncr_OpenClose_excel_for_eden(combined_result, report_t
             # Find all original keys that map to this normalized site
             original_keys = find_original_keys(site)
             
+            # --- Corrected Code ---
             if site == "Common_Area":
-                # Handle Common_Area specifically (only for non-tower-specific Common Areas)
+                # Handle Common_Area specifically
                 for original_key in original_keys:
-                    # Skip tower-specific CommonAreas
+                    # Skip tower-specific CommonAreas, as they are handled under each tower
                     if re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE):
                         continue
-                        
-                    # Resolved data
+                    
+                    # Correctly read pre-aggregated counts for resolved/closed records
                     if original_key in resolved_sites:
                         site_data = resolved_sites[original_key]
-                        disciplines = site_data.get("Discipline", [])
-                        for discipline in disciplines:
-                            if discipline == 'SW':
-                                resolved_counts['Structure Works'] += 1
-                            elif discipline == 'FW':
-                                resolved_counts['Civil Finishing'] += 1
-                            elif discipline in ['MEP', 'HSE']:
-                                resolved_counts['MEP'] += 1
+                        resolved_counts['Civil Finishing'] += site_data.get("FW", 0)
+                        resolved_counts['Structure Works'] += site_data.get("SW", 0)
+                        resolved_counts['MEP'] += site_data.get("MEP", 0)
+
+                    # Correctly read pre-aggregated counts for open records
+                    if original_key in open_sites:
+                        site_data = open_sites[original_key]
+                        open_counts['Civil Finishing'] += site_data.get("FW", 0)
+                        open_counts['Structure Works'] += site_data.get("SW", 0)
+                        open_counts['MEP'] += site_data.get("MEP", 0)
                     
                     # Open data
                     if original_key in open_sites:
@@ -2369,34 +2148,27 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
             # Find all original keys that map to this normalized site
             original_keys = find_original_keys(site)
             
+            # --- Corrected Code ---
             if site == "Common_Area":
-                # Handle Common_Area specifically (only for non-tower-specific Common Areas)
+                # Handle Common_Area specifically
                 for original_key in original_keys:
-                    # Skip tower-specific CommonAreas
+                    # This check correctly skips tower-specific common areas
                     if re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE):
                         continue
-                        
-                    # Resolved data
+
+                    # Correctly read the pre-aggregated counts for resolved/closed records
                     if original_key in resolved_sites:
-                        disciplines = resolved_sites[original_key].get("Discipline", [])
-                        for discipline in disciplines:
-                            if discipline == 'FW':
-                                resolved_counts['Civil Finishing'] += 1
-                            elif discipline == 'SW':
-                                resolved_counts['Structure Works'] += 1
-                            elif discipline in ['MEP', 'HSE']:
-                                resolved_counts['MEP'] += 1
-                    
-                    # Open data
+                        site_data = resolved_sites[original_key]
+                        resolved_counts['Civil Finishing'] += site_data.get("FW", 0)
+                        resolved_counts['Structure Works'] += site_data.get("SW", 0)
+                        resolved_counts['MEP'] += site_data.get("MEP", 0)
+
+                    # Correctly read the pre-aggregated counts for open records
                     if original_key in open_sites:
-                        disciplines = open_sites[original_key].get("Discipline", [])
-                        for discipline in disciplines:
-                            if discipline == 'FW':
-                                open_counts['Civil Finishing'] += 1
-                            elif discipline == 'SW':
-                                open_counts['Structure Works'] += 1
-                            elif discipline in ['MEP', 'HSE']:
-                                open_counts['MEP'] += 1
+                        site_data = open_sites[original_key]
+                        open_counts['Civil Finishing'] += site_data.get("FW", 0)
+                        open_counts['Structure Works'] += site_data.get("SW", 0)
+                        open_counts['MEP'] += site_data.get("MEP", 0)
             
             else:  # Tower sites
                 resolved_pour_counts = {level: {'Civil Finishing': 0, 'Structure Works': 0, 'MEP': 0} for level in pour_levels}
@@ -2548,11 +2320,10 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
             
             row = 2
             for site in standard_sites:
-                original_keys = [k for k, v in site_mapping_safety.items() if site in v]
-                value = 0
-                for original_key in original_keys:
-                    if not re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE) or site != "Common_Area":
-                        value += sites_data.get(original_key, {}).get("Count", 0)
+                original_keys = [k for k, v_list in site_mapping_safety.items() for v in v_list if v == site]
+                # Simply sum the counts for all matching keys without the incorrect 'if' condition
+                value = sum(sites_data.get(k, {}).get("Count", 0) for k in original_keys)
+
                 worksheet.write(row, 0, site, default_site_format)
                 worksheet.write(row, 1, value, default_cell_format)
                 row += 1
@@ -2568,9 +2339,8 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
             row = 1
             for col, header in enumerate(headers):
                 worksheet_details.write(row, col, header, header_format)
-            row = 2
             for site in standard_sites:
-                original_keys = [k for k, v in site_mapping_safety.items() if site in v]
+                original_keys = [k for k, v_list in site_mapping_safety.items() for v in v_list if v == site]
                 for original_key in original_keys:
                     if not re.search(r'(?:eden-)?tower-\d+(?:-\d+)?-commonarea', original_key, re.IGNORECASE) or site != "Common_Area":
                         site_data = sites_data.get(original_key, {})
@@ -2604,6 +2374,22 @@ def generate_combined_excel_report_for_eden(all_reports, filename_prefix="All_Re
 
 # Streamlit UI
 
+
+# Initialize session state (unchanged)
+
+
+# Login Section (unchanged)
+
+
+# Data Fetch Section (unchanged)
+
+
+# Report Generation Section
+
+
+# Generate Combined NCR Report
+
+
 # Helper function to generate report title
 def generate_report_title(prefix):
     now = datetime.now()  # Current date: April 25, 2025
@@ -2619,5 +2405,3 @@ def generate_report_title(prefix):
 
 
 # All Reports Button
-
-
