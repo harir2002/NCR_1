@@ -221,7 +221,6 @@ def clean_and_parse_json(text):
     logger.error(f"Could not extract valid JSON from: {text}")
     return None
 def assign_site(description: str, standard_sites: list) -> list:
- 
     if not isinstance(description, str) or not description.strip():
         return ["Common Area"]
 
@@ -232,16 +231,17 @@ def assign_site(description: str, standard_sites: list) -> list:
     matched = set()
 
     # Check shorthand and specific patterns first
+    # The key change is using 'ligh?' to match both 'lig' and 'ligh'
     shorthand_patterns = {
         r'\bews\s*1\b': "EWS Tower 1",
-        r'\blig\s*3\b': "LIG Tower 3",
-        r'\blig\s*2\b': "LIG Tower 2",
-        r'\blig\s*1\b': "LIG Tower 1",
+        r'\bligh?\s*3\b': "LIG Tower 3",  # MODIFIED
+        r'\bligh?\s*2\b': "LIG Tower 2",  # MODIFIED
+        r'\bligh?\s*1\b': "LIG Tower 1",  # MODIFIED
         r'\bews\s*2\b': "EWS Tower 2",
         r'\bews\s*3\b': "EWS Tower 3",
-        r'\btower\s*lig\s*3\b': "LIG Tower 3",
-        r'\btower\s*lig\s*2\b': "LIG Tower 2",
-        r'\btower\s*lig\s*1\b': "LIG Tower 1"
+        r'\btower\s*ligh?\s*3\b': "LIG Tower 3", # MODIFIED
+        r'\btower\s*ligh?\s*2\b': "LIG Tower 2", # MODIFIED
+        r'\btower\s*ligh?\s*1\b': "LIG Tower 1"  # MODIFIED
     }
     
     for pattern, site_name in shorthand_patterns.items():
@@ -250,7 +250,8 @@ def assign_site(description: str, standard_sites: list) -> list:
 
     # Check for full tower names (e.g., LIG Tower 3, EWS Tower 1)
     if not matched:
-        lig_pattern = r'\blig\s*tower\s*(\d)\b'
+        # Also modified here to be flexible
+        lig_pattern = r'\bligh?\s*tower\s*(\d)\b' # MODIFIED
         lig_matches = re.findall(lig_pattern, desc)
         for tower_num in lig_matches:
             site_name = f"LIG Tower {tower_num}"
@@ -266,7 +267,8 @@ def assign_site(description: str, standard_sites: list) -> list:
 
     # Check for exact or close matches of standard sites
     for site in standard_sites:
-        site_pattern = re.escape(site.lower()).replace(' ', r'\s+')
+        # This part can also be made flexible if needed, but the above changes are more targeted.
+        site_pattern = re.escape(site.lower()).replace(' ', r'\s+').replace('lig', 'ligh?')
         if re.search(rf'\b{site_pattern}\b', desc) and site not in matched:
             matched.add(site)
 
@@ -275,7 +277,7 @@ def assign_site(description: str, standard_sites: list) -> list:
 
 @st.cache_data
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2), retry=retry_if_exception_type((requests.RequestException, ValueError, KeyError)))
-def generate_ncr_report_for_ews(df: pd.DataFrame, report_type: str, start_date=None, end_date=None, Until_Date=None) -> Tuple[Dict[str, Any], str]:
+def generate_ncr_report(df: pd.DataFrame, report_type: str, start_date=None, end_date=None, Until_Date=None) -> Tuple[Dict[str, Any], str]:
     try:
         with st.spinner(f"Generating {report_type} NCR Report..."):
             # Input validation
@@ -762,7 +764,7 @@ def generate_ncr_report_for_ews(df: pd.DataFrame, report_type: str, start_date=N
     
 # Generate NCR Housekeeping Report
 @st.cache_data
-def generate_ncr_Housekeeping_report_for_ews(df, report_type, start_date=None, end_date=None, open_until_date=None):
+def generate_ncr_Housekeeping_report(df, report_type, start_date=None, end_date=None, open_until_date=None):
     """Generate Housekeeping NCR report for Open or Closed records."""
     with st.spinner(f"Generating {report_type} Housekeeping NCR Report with WatsonX..."):
         today = pd.to_datetime(datetime.today().strftime('%Y/%m/%d'))
@@ -1126,7 +1128,7 @@ standard_sites = [
 ]
 
 @st.cache_data
-def generate_ncr_Safety_report_for_ews(df, report_type, start_date=None, end_date=None, open_until_date=None):
+def generate_ncr_Safety_report(df, report_type, start_date=None, end_date=None, open_until_date=None):
     """Generate Safety NCR report for Open or Closed records."""
     with st.spinner(f"Generating {report_type} Safety NCR Report with WatsonX..."):
         try:
@@ -1458,7 +1460,7 @@ def generate_ncr_Safety_report_for_ews(df, report_type, start_date=None, end_dat
             return {"error": f"Unexpected Error: {str(e)}"}, ""
         
 @st.cache_data
-def generate_consolidated_ncr_OpenClose_excel_for_ews(combined_result, report_title="NCR"):
+def generate_consolidated_ncr_OpenClose_excel(combined_result, report_title="NCR"):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
@@ -1650,7 +1652,7 @@ def generate_consolidated_ncr_OpenClose_excel_for_ews(combined_result, report_ti
         return output
     
 @st.cache_data
-def generate_consolidated_ncr_Housekeeping_excel_for_ews(combined_result, report_title="Housekeeping: Current Month"):
+def generate_consolidated_ncr_Housekeeping_excel(combined_result, report_title="Housekeeping: Current Month"):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
@@ -1764,7 +1766,7 @@ def generate_consolidated_ncr_Housekeeping_excel_for_ews(combined_result, report
         return output
     
 @st.cache_data
-def generate_consolidated_ncr_Safety_excel_for_ews(combined_result, report_title=None):
+def generate_consolidated_ncr_Safety_excel(combined_result, report_title=None):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
@@ -1884,7 +1886,7 @@ def generate_consolidated_ncr_Safety_excel_for_ews(combined_result, report_title
         return output
     
 @st.cache_data
-def generate_combined_excel_report_for_ews(all_reports, filename_prefix="All_Reports"):
+def generate_combined_excel_report(all_reports, filename_prefix="All_Reports"):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
@@ -2179,10 +2181,91 @@ def generate_combined_excel_report_for_ews(all_reports, filename_prefix="All_Rep
     output.seek(0)
     return output
 
+# Streamlit UI
+st.title("NCR Safety Housekeeping Reports")
 
+# Initialize session state (unchanged)
+if "ncr_df" not in st.session_state:
+    st.session_state["ncr_df"] = None
+if "safety_df" not in st.session_state:
+    st.session_state["safety_df"] = None
+if "housekeeping_df" not in st.session_state:
+    st.session_state["housekeeping_df"] = None
+if "session_id" not in st.session_state:
+    st.session_state["session_id"] = None
+
+# Login Section (unchanged)
+st.sidebar.title("🔒 Asite Login")
+email = st.sidebar.text_input("Email", "impwatson@gadieltechnologies.com", key="email_input")
+password = st.sidebar.text_input("Password", "Srihari@790$", type="password", key="password_input")
+if st.sidebar.button("Login", key="login_button"):
+    session_id = login_to_asite(email, password)
+    if session_id:
+        st.session_state["session_id"] = session_id
+        st.sidebar.success("✅ Login Successful")
+
+# Data Fetch Section (unchanged)
+st.sidebar.title("📂 Project Data")
+project_name, form_name, project_options = project_dropdown()
+if "session_id" in st.session_state:
+    if st.sidebar.button("Fetch Data", key="fetch_data"):
+        header, data, payload = fetch_project_data(st.session_state["session_id"], project_name, form_name)
+        st.json(header)
+        if data:
+            df = process_json_data(data)
+            st.session_state["ncr_df"] = df.copy()
+            st.session_state["safety_df"] = df.copy()
+            st.session_state["housekeeping_df"] = df.copy()
+            st.dataframe(df)
+            st.success("✅ Data fetched and processed successfully for all report types!")
+
+# Report Generation Section
+st.sidebar.title("📋 Combined NCR Report")
+if st.session_state["ncr_df"] is not None:
+    ncr_df = st.session_state["ncr_df"]
+    closed_start = st.sidebar.date_input("Closed Start Date", ncr_df['Created Date (WET)'].min().date(), key="ncr_closed_start")
+    closed_end = st.sidebar.date_input("Closed End Date", ncr_df['Expected Close Date (WET)'].max().date(), key="ncr_closed_end")
+    open_end = st.sidebar.date_input("Open Until Date", ncr_df['Created Date (WET)'].max().date(), key="ncr_open_end")
+else:
+    closed_start = st.sidebar.date_input("Closed Start Date", key="ncr_closed_start")
+    closed_end = st.sidebar.date_input("Closed End Date", key="ncr_closed_end")
+    open_end = st.sidebar.date_input("Open Until Date", key="ncr_open_end")
 
 # Generate Combined NCR Report
+if st.sidebar.button("NCR(Open&Close) Report", key="generate_report_button"):
+    if st.session_state["ncr_df"] is not None:
+        ncr_df = st.session_state["ncr_df"]
+        now = datetime.now()
+        day = now.strftime("%d")
+        year = now.strftime("%Y")
+        month_name = closed_end.strftime("%B")
+        report_title = f"NCR: {day}_{month_name}_{year}"
+        
+        closed_result, closed_raw = generate_ncr_report(ncr_df, "Closed", closed_start, closed_end)
+        open_result, open_raw = generate_ncr_report(ncr_df, "Open", Until_Date=open_end)
 
+        combined_result = {}
+        if "error" not in closed_result:
+            combined_result["NCR resolved beyond 21 days"] = closed_result["Closed"]
+        else:
+            combined_result["NCR resolved beyond 21 days"] = {"error": closed_result["error"]}
+        if "error" not in open_result:
+            combined_result["NCR open beyond 21 days"] = open_result["Open"]
+        else:
+            combined_result["NCR open beyond 21 days"] = {"error": open_result["error"]}
+
+        st.subheader("Combined NCR Report (JSON)")
+        st.dataframe(combined_result)
+        
+        excel_file = generate_consolidated_ncr_OpenClose_excel(combined_result, report_title)
+        st.download_button(
+            label="📥 Download Excel Report",
+            data=excel_file,
+            file_name=f"NCR_Report_{day}_{month_name}_{year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.error("Please fetch data first!")
 
 # Helper function to generate report title
 def generate_report_title(prefix):
@@ -2193,11 +2276,193 @@ def generate_report_title(prefix):
     return f"{prefix}: {day}_{month_name}_{year}"
 
 # Generate Safety NCR Report
+if st.sidebar.button("Safety NCR Report", key="safety_ncr"):
+    if st.session_state["safety_df"] is not None:
+        safety_df = st.session_state["safety_df"]
+        now = datetime.now()
+        day = now.strftime("%d")
+        year = now.strftime("%Y")
+        month_name = closed_end.strftime("%B")
+        report_title = f"Safety: {day}_{month_name}_{year}"
 
+        closed_result, closed_raw = generate_ncr_Safety_report(
+            safety_df,
+            report_type="Closed",
+            start_date=closed_start.strftime('%Y/%m/%d') if closed_start else None,
+            end_date=closed_end.strftime('%Y/%m/%d') if closed_end else None,
+            open_until_date=None
+        )
+        st.subheader("Closed Safety NCR Report (JSON)")
+        st.dataframe(closed_result)
+        excel_closed = generate_consolidated_ncr_Safety_excel(closed_result, report_title)
+        st.download_button(
+            label="📥 Download Closed Safety Excel Report",
+            data=excel_closed,
+            file_name=f"Safety_NCR_Report_Closed_{day}_{month_name}_{year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_safety_closed"
+        )
+
+        open_result, open_raw = generate_ncr_Safety_report(
+            safety_df,
+            report_type="Open",
+            start_date=None,
+            end_date=None,
+            open_until_date=open_end.strftime('%Y/%m/%d') if open_end else None
+        )
+        st.subheader("Open Safety NCR Report (JSON)")
+        st.dataframe(open_result)
+        excel_open = generate_consolidated_ncr_Safety_excel(open_result, report_title)
+        st.download_button(
+            label="📥 Download Open Safety Excel Report",
+            data=excel_open,
+            file_name=f"Safety_NCR_Report_Open_{day}_{month_name}_{year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_safety_open"
+        )
+    else:
+        st.error("Please fetch data first!")
 
 # Generate Housekeeping NCR Report
+if st.sidebar.button("Housekeeping NCR Report", key="housekeeping_ncr"):
+    if st.session_state["housekeeping_df"] is not None:
+        housekeeping_df = st.session_state["housekeeping_df"]
+        now = datetime.now()
+        day = now.strftime("%d")
+        year = now.strftime("%Y")
+        month_name = closed_end.strftime("%B")
+        report_title = f"Housekeeping: {day}_{month_name}_{year}"
 
+        closed_result, closed_raw = generate_ncr_Housekeeping_report(
+            housekeeping_df,
+            report_type="Closed",
+            start_date=closed_start.strftime('%Y/%m/%d') if closed_start else None,
+            end_date=closed_end.strftime('%Y/%m/%d') if closed_end else None,
+            open_until_date=None
+        )
+        st.subheader("Closed Housekeeping NCR Report (JSON)")
+        st.dataframe(closed_result)
+        excel_closed = generate_consolidated_ncr_Housekeeping_excel(closed_result, f"Housekeeping: Closed - {day}_{month_name}_{year}")
+        st.download_button(
+            label="📥 Download Closed Housekeeping Excel Report",
+            data=excel_closed,
+            file_name=f"Housekeeping_NCR_Report_Closed_{day}_{month_name}_{year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_housekeeping_closed"
+        )
+
+        open_result, open_raw = generate_ncr_Housekeeping_report(
+            housekeeping_df,
+            report_type="Open",
+            start_date=None,
+            end_date=None,
+            open_until_date=open_end.strftime('%Y/%m/%d') if open_end else None
+        )
+        st.subheader("Open Housekeeping NCR Report (JSON)")
+        st.dataframe(open_result)
+        excel_open = generate_consolidated_ncr_Housekeeping_excel(open_result, f"Housekeeping: Open - {day}_{month_name}_{year}")
+        st.download_button(
+            label="📥 Download Open Housekeeping Excel Report",
+            data=excel_open,
+            file_name=f"Housekeeping_NCR_Report_Open_{day}_{month_name}_{year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_housekeeping_open"
+        )
+    else:
+        st.error("Please fetch data first!")
 
 # All Reports Button
+if st.sidebar.button("All_Report", key="All_Report"):
+    if st.session_state["ncr_df"] is not None and st.session_state["safety_df"] is not None and st.session_state["housekeeping_df"] is not None:
+        ncr_df = st.session_state["ncr_df"]
+        safety_df = st.session_state["safety_df"]
+        housekeeping_df = st.session_state["housekeeping_df"]
+        now = datetime.now()
+        day = now.strftime("%d")
+        year = now.strftime("%Y")
+        month_name = closed_end.strftime("%B") if closed_end else now.strftime("%B")
 
+        # Validate and format open_end
+        if open_end is None:
+            st.error("❌ Please select a valid Open Until Date.")
+            logger.error("Open Until Date is not provided.")
+        else:
+            # Convert open_end to string format for generate_ncr_report
+            open_end_str = open_end.strftime('%Y/%m/%d')
 
+            report_title_ncr = f"NCR: {day}_{month_name}_{year}"
+            closed_result_ncr, closed_raw_ncr = generate_ncr_report(ncr_df, "Closed", closed_start, closed_end)
+            open_result_ncr, open_raw_ncr = generate_ncr_report(ncr_df, "Open", Until_Date=open_end_str)
+
+            combined_result_ncr = {}
+            if "error" not in closed_result_ncr:
+                combined_result_ncr["NCR resolved beyond 21 days"] = closed_result_ncr["Closed"]
+            else:
+                combined_result_ncr["NCR resolved beyond 21 days"] = {"error": closed_result_ncr["error"]}
+            if "error" not in open_result_ncr:
+                combined_result_ncr["NCR open beyond 21 days"] = open_result_ncr["Open"]
+            else:
+                combined_result_ncr["NCR open beyond 21 days"] = {"error": open_result_ncr["error"]}
+
+            report_title_safety = f"Safety NCR: {day}_{month_name}_{year}"
+            closed_result_safety, closed_raw_safety = generate_ncr_Safety_report(
+                safety_df,
+                report_type="Closed",
+                start_date=closed_start.strftime('%Y/%m/%d') if closed_start else None,
+                end_date=closed_end.strftime('%Y/%m/%d') if closed_end else None,
+                open_until_date=None
+            )
+            open_result_safety, open_raw_safety = generate_ncr_Safety_report(
+                safety_df,
+                report_type="Open",
+                start_date=None,
+                end_date=None,
+                open_until_date=open_end_str
+            )
+
+            report_title_housekeeping = f"Housekeeping NCR: {day}_{month_name}_{year}"
+            closed_result_housekeeping, closed_raw_housekeeping = generate_ncr_Housekeeping_report(
+                housekeeping_df,
+                report_type="Closed",
+                start_date=closed_start.strftime('%Y/%m/%d') if closed_start else None,
+                end_date=closed_end.strftime('%Y/%m/%d') if closed_end else None,
+                open_until_date=None
+            )
+            open_result_housekeeping, open_raw_housekeeping = generate_ncr_Housekeeping_report(
+                housekeeping_df,
+                report_type="Open",
+                start_date=None,
+                end_date=None,
+                open_until_date=open_end_str
+            )
+
+            all_reports = {
+                "Combined_NCR": combined_result_ncr,
+                "Safety_NCR_Closed": closed_result_safety,
+                "Safety_NCR_Open": open_result_safety,
+                "Housekeeping_NCR_Closed": closed_result_housekeeping,
+                "Housekeeping_NCR_Open": open_result_housekeeping
+            }
+
+            st.subheader("Combined NCR Report (JSON)")
+            st.dataframe(combined_result_ncr)
+            st.subheader("Safety NCR Closed Report (JSON)")
+            st.dataframe(closed_result_safety)
+            st.subheader("Safety NCR Open Report (JSON)")
+            st.dataframe(open_result_safety)
+            st.subheader("Housekeeping NCR Closed Report (JSON)")
+            st.dataframe(closed_result_housekeeping)
+            st.subheader("Housekeeping NCR Open Report (JSON)")
+            st.dataframe(open_result_housekeeping)
+
+            excel_file = generate_combined_excel_report(all_reports, f"All_Reports_{day}_{month_name}_{year}")
+            st.download_button(
+                label="📥 Download All Reports Excel",
+                data=excel_file,
+                file_name=f"All_Reports_{day}_{month_name}_{year}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_all_reports"
+            )
+    else:
+        st.error("Please fetch data first!")
+        
